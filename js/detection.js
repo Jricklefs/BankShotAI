@@ -8,7 +8,7 @@
 import {
   BALL_COLORS, BALL_DIAMETER, BALL_RADIUS,
   TABLE_WIDTH, TABLE_LENGTH
-} from './table-config.js?v=1771959216';
+} from './table-config.js?v=1771959798';
 
 const TABLE_ASPECT = TABLE_LENGTH / TABLE_WIDTH; // ~2.0
 const ASPECT_TOLERANCE = 0.6;
@@ -97,8 +97,8 @@ export function detectTable(imageData) {
     const hiV = Math.round(Math.min(255, mV + 60));
     console.log(`[detectTable] Mask range: [${loH},${loS},${loV}] - [${hiH},${hiS},${hiV}]`);
 
-    const lo = mat(cv.matFromArray(1, 1, cv.CV_8UC3, [loH, loS, loV]));
-    const hi = mat(cv.matFromArray(1, 1, cv.CV_8UC3, [hiH, hiS, hiV]));
+    const lo = mat(new cv.Mat(h, w, cv.CV_8UC3, new cv.Scalar(loH, loS, loV)));
+    const hi = mat(new cv.Mat(h, w, cv.CV_8UC3, new cv.Scalar(hiH, hiS, hiV)));
     const mask = mat(new cv.Mat());
     cv.inRange(hsv, lo, hi, mask);
 
@@ -384,8 +384,8 @@ export class BallDetector {
 
     // Check white ratio
     const whiteMask = new cv.Mat();
-    const wlo = new cv.Mat(1, 1, cv.CV_8UC3, new cv.Scalar(0, 0, 170));
-    const whi = new cv.Mat(1, 1, cv.CV_8UC3, new cv.Scalar(180, 50, 255));
+    const wlo = new cv.Mat(hsvRoi.rows, hsvRoi.cols, cv.CV_8UC3, new cv.Scalar(0, 0, 170));
+    const whi = new cv.Mat(hsvRoi.rows, hsvRoi.cols, cv.CV_8UC3, new cv.Scalar(180, 50, 255));
     cv.inRange(hsvRoi, wlo, whi, whiteMask);
     wlo.delete(); whi.delete();
     const whiteInBall = new cv.Mat();
@@ -398,8 +398,8 @@ export class BallDetector {
     let bestColor = null, bestScore = 0;
     for (const [colorName, info] of Object.entries(BALL_COLORS)) {
       const colorMask = new cv.Mat();
-      const clo = new cv.Mat(1, 1, cv.CV_8UC3, new cv.Scalar(...info.hsvLow));
-      const chi = new cv.Mat(1, 1, cv.CV_8UC3, new cv.Scalar(...info.hsvHigh));
+      const clo = new cv.Mat(hsvRoi.rows, hsvRoi.cols, cv.CV_8UC3, new cv.Scalar(...info.hsvLow));
+      const chi = new cv.Mat(hsvRoi.rows, hsvRoi.cols, cv.CV_8UC3, new cv.Scalar(...info.hsvHigh));
       cv.inRange(hsvRoi, clo, chi, colorMask);
       clo.delete(); chi.delete();
       const colorInBall = new cv.Mat();
