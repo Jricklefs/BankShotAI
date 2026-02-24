@@ -358,9 +358,9 @@ function _findEdgeLine(edges, side, w, h, scanRange) {
     }
   }
 
-  // Require a minimum edge strength
+  // Require a minimum edge strength (low threshold — even faint cushion lines count)
   const minScore = (side === 'top' || side === 'bottom') ?
-    Math.round((w * 0.6) * 0.1) : Math.round((h * 0.6) * 0.1);
+    Math.round((w * 0.6) * 0.03) : Math.round((h * 0.6) * 0.03);
   
   console.log(`[_findEdgeLine] ${side}: bestPos=${bestPos}, score=${bestScore}, min=${minScore}`);
   return bestScore >= minScore ? bestPos : null;
