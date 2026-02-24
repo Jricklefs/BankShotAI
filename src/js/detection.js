@@ -164,7 +164,13 @@ export function detectTable(imageData) {
 
     console.log(`[detectTable] Found table: ${(bestArea/totalArea*100).toFixed(1)}% of frame, corners:`, bestQuad);
     const confidence = Math.min(1, (bestArea / totalArea) / 0.3);
-    return { corners: bestQuad, confidence };
+
+    // Shrink quadrilateral inward so corners land inside pockets
+    // The felt contour is at the outer rail edge; bumper cushions are ~5% inward
+    const inset = _insetQuad(bestQuad, 0.05);
+    console.log(`[detectTable] Inset corners:`, inset);
+
+    return { corners: inset, confidence };
   } catch (e) {
     console.error('Table detection error:', e);
     return null;
@@ -217,6 +223,20 @@ function _orderCorners(pts) {
 
   console.log(`[_orderCorners] TL=${tl}, TR=${tr}, BL=${bl}, BR=${br}`);
   return [bl, br, tr, tl]; // BL, BR, TR, TL
+}
+
+/**
+ * Shrink a quadrilateral inward by a fraction of its size.
+ * Each corner moves toward the centroid by `frac` of its distance.
+ * This makes corners land inside the pockets where cushion lines would intersect.
+ */
+function _insetQuad(corners, frac) {
+  const cx = corners.reduce((s, c) => s + c[0], 0) / 4;
+  const cy = corners.reduce((s, c) => s + c[1], 0) / 4;
+  return corners.map(c => [
+    c[0] + (cx - c[0]) * frac,
+    c[1] + (cy - c[1]) * frac,
+  ]);
 }
 
 
