@@ -8,7 +8,7 @@
 import {
   BALL_COLORS, BALL_DIAMETER, BALL_RADIUS,
   TABLE_WIDTH, TABLE_LENGTH
-} from './table-config.js?v=1771964714';
+} from './table-config.js?v=1771964797';
 
 const TABLE_ASPECT = TABLE_LENGTH / TABLE_WIDTH; // ~2.0
 const ASPECT_TOLERANCE = 0.6;
@@ -311,11 +311,14 @@ function _findEdgeLine(edges, side, w, h, scanRange) {
   let bestScore = 0;
   let bestPos = null;
 
+  // Skip the first 3% from each edge to avoid the warped boundary artifact
+  const skip = 0.03;
+
   if (side === 'top') {
+    const startY = Math.round(h * skip);
     const maxScan = Math.round(h * scanRange);
-    for (let y = 0; y < maxScan; y++) {
+    for (let y = startY; y < maxScan; y++) {
       let score = 0;
-      // Sample middle 60% to avoid pocket corners
       const x0 = Math.round(w * 0.2);
       const x1 = Math.round(w * 0.8);
       for (let x = x0; x < x1; x++) {
@@ -324,8 +327,9 @@ function _findEdgeLine(edges, side, w, h, scanRange) {
       if (score > bestScore) { bestScore = score; bestPos = y; }
     }
   } else if (side === 'bottom') {
+    const endY = Math.round(h * (1 - skip));
     const maxScan = Math.round(h * scanRange);
-    for (let y = h - 1; y >= h - maxScan; y--) {
+    for (let y = endY; y >= h - maxScan; y--) {
       let score = 0;
       const x0 = Math.round(w * 0.2);
       const x1 = Math.round(w * 0.8);
@@ -335,8 +339,9 @@ function _findEdgeLine(edges, side, w, h, scanRange) {
       if (score > bestScore) { bestScore = score; bestPos = y; }
     }
   } else if (side === 'left') {
+    const startX = Math.round(w * skip);
     const maxScan = Math.round(w * scanRange);
-    for (let x = 0; x < maxScan; x++) {
+    for (let x = startX; x < maxScan; x++) {
       let score = 0;
       const y0 = Math.round(h * 0.2);
       const y1 = Math.round(h * 0.8);
@@ -346,8 +351,9 @@ function _findEdgeLine(edges, side, w, h, scanRange) {
       if (score > bestScore) { bestScore = score; bestPos = x; }
     }
   } else if (side === 'right') {
+    const endX = Math.round(w * (1 - skip));
     const maxScan = Math.round(w * scanRange);
-    for (let x = w - 1; x >= w - maxScan; x--) {
+    for (let x = endX; x >= w - maxScan; x--) {
       let score = 0;
       const y0 = Math.round(h * 0.2);
       const y1 = Math.round(h * 0.8);
