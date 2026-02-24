@@ -5,11 +5,11 @@
  * User takes a photo, then taps cue ball → target ball → pocket.
  */
 
-import { Camera } from './camera.js';
-import { BallDetector, loadOpenCV, isOpenCVReady, detectTable } from './detection.js';
-import { Renderer } from './renderer.js';
-import { BankShotCalculator } from './physics.js';
-import { createSyntheticBalls, TABLE_WIDTH, TABLE_LENGTH, BALL_DIAMETER, POCKETS } from './table-config.js';
+import { Camera } from './camera.js?v=1771952648';
+import { BallDetector, loadOpenCV, isOpenCVReady, detectTable } from './detection.js?v=1771952648';
+import { Renderer } from './renderer.js?v=1771952648';
+import { BankShotCalculator } from './physics.js?v=1771952648';
+import { createSyntheticBalls, TABLE_WIDTH, TABLE_LENGTH, BALL_DIAMETER, POCKETS } from './table-config.js?v=1771952648';
 
 const STATE = {
   LOADING:         'loading',
