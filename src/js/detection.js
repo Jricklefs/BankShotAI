@@ -165,12 +165,16 @@ export function detectTable(imageData) {
     console.log(`[detectTable] Found table: ${(bestArea/totalArea*100).toFixed(1)}% of frame, corners:`, bestQuad);
     const confidence = Math.min(1, (bestArea / totalArea) / 0.3);
 
-    // Shrink quadrilateral inward so corners land inside pockets
-    // The felt contour is at the outer rail edge; bumper cushion nose is significantly inward
-    const inset = _insetQuad(bestQuad, 0.14);
-    console.log(`[detectTable] Inset corners:`, inset);
+    // Detect actual bumper edges by warping to rectangle and finding cushion lines
+    const bumperCorners = _detectBumperEdges(bgr, bestQuad, cleanup, mat);
+    if (bumperCorners) {
+      console.log(`[detectTable] Bumper corners:`, bumperCorners);
+      return { corners: bumperCorners, confidence };
+    }
 
-    return { corners: inset, confidence };
+    // Fallback: use felt quad as-is
+    console.log(`[detectTable] Bumper detection failed, using felt quad`);
+    return { corners: bestQuad, confidence };
   } catch (e) {
     console.error('Table detection error:', e);
     return null;
@@ -223,6 +227,143 @@ function _orderCorners(pts) {
 
   console.log(`[_orderCorners] TL=${tl}, TR=${tr}, BL=${bl}, BR=${br}`);
   return [bl, br, tr, tl]; // BL, BR, TR, TL
+}
+
+/**
+ * Detect the actual bumper/cushion edges inside the felt region.
+ * Warp to rectangle → grayscale → Canny → scan inward from each edge
+ * to find the first strong edge line (cushion nose).
+ * Returns 4 corners in original photo space [BL, BR, TR, TL].
+ */
+function _detectBumperEdges(bgr, feltQuad, cleanup, mat) {
+  try {
+    // Warp felt quad to a rectangle
+    const dstW = 800;
+    const dstH = 400;  // TABLE_LENGTH:TABLE_WIDTH ≈ 2:1, but W > H in warped space
+    // feltQuad = [BL, BR, TR, TL]
+    const srcPts = mat(cv.matFromArray(4, 1, cv.CV_32FC2, feltQuad.flat()));
+    const dstPts = mat(cv.matFromArray(4, 1, cv.CV_32FC2, [
+      0, dstH,      // BL
+      dstW, dstH,   // BR
+      dstW, 0,      // TR
+      0, 0,         // TL
+    ]));
+
+    const M = mat(cv.getPerspectiveTransform(srcPts, dstPts));
+    const Minv = mat(cv.getPerspectiveTransform(dstPts, srcPts));
+    const warped = mat(new cv.Mat());
+    cv.warpPerspective(bgr, warped, M, new cv.Size(dstW, dstH));
+
+    // Convert to grayscale and run Canny
+    const gray = mat(new cv.Mat());
+    cv.cvtColor(warped, gray, cv.COLOR_BGR2GRAY);
+    const blurred = mat(new cv.Mat());
+    cv.GaussianBlur(gray, blurred, new cv.Size(3, 3), 0);
+    const edges = mat(new cv.Mat());
+    cv.Canny(blurred, edges, 50, 150);
+
+    // Scan inward from each edge to find the bumper line
+    // The bumper creates a strong edge ~5-15% inward from the felt boundary
+    const scanRange = 0.20; // scan up to 20% inward
+    
+    // For each edge, look at intensity profile and find strongest edge
+    const topY = _findEdgeLine(edges, 'top', dstW, dstH, scanRange);
+    const botY = _findEdgeLine(edges, 'bottom', dstW, dstH, scanRange);
+    const leftX = _findEdgeLine(edges, 'left', dstW, dstH, scanRange);
+    const rightX = _findEdgeLine(edges, 'right', dstW, dstH, scanRange);
+
+    console.log(`[_detectBumperEdges] top=${topY}, bottom=${botY}, left=${leftX}, right=${rightX}`);
+
+    if (topY === null || botY === null || leftX === null || rightX === null) {
+      return null;
+    }
+
+    // Build bumper corners in warped space [BL, BR, TR, TL]
+    const bumperWarped = [
+      [leftX, botY],   // BL
+      [rightX, botY],  // BR
+      [rightX, topY],  // TR
+      [leftX, topY],   // TL
+    ];
+
+    // Unwarp back to photo space using inverse transform
+    const warpedPts = mat(cv.matFromArray(4, 1, cv.CV_32FC2, bumperWarped.flat()));
+    const photoPts = mat(new cv.Mat());
+    cv.perspectiveTransform(warpedPts, photoPts, Minv);
+
+    const result = [];
+    for (let i = 0; i < 4; i++) {
+      result.push([photoPts.data32F[i * 2], photoPts.data32F[i * 2 + 1]]);
+    }
+    return result;
+  } catch (e) {
+    console.error('[_detectBumperEdges] Error:', e);
+    return null;
+  }
+}
+
+/**
+ * Scan from one edge inward looking for the strongest edge line.
+ * Returns the coordinate (X or Y) of the bumper edge.
+ */
+function _findEdgeLine(edges, side, w, h, scanRange) {
+  const data = edges.data;
+  let bestScore = 0;
+  let bestPos = null;
+
+  if (side === 'top') {
+    const maxScan = Math.round(h * scanRange);
+    for (let y = 0; y < maxScan; y++) {
+      let score = 0;
+      // Sample middle 60% to avoid pocket corners
+      const x0 = Math.round(w * 0.2);
+      const x1 = Math.round(w * 0.8);
+      for (let x = x0; x < x1; x++) {
+        if (data[y * w + x] > 0) score++;
+      }
+      if (score > bestScore) { bestScore = score; bestPos = y; }
+    }
+  } else if (side === 'bottom') {
+    const maxScan = Math.round(h * scanRange);
+    for (let y = h - 1; y >= h - maxScan; y--) {
+      let score = 0;
+      const x0 = Math.round(w * 0.2);
+      const x1 = Math.round(w * 0.8);
+      for (let x = x0; x < x1; x++) {
+        if (data[y * w + x] > 0) score++;
+      }
+      if (score > bestScore) { bestScore = score; bestPos = y; }
+    }
+  } else if (side === 'left') {
+    const maxScan = Math.round(w * scanRange);
+    for (let x = 0; x < maxScan; x++) {
+      let score = 0;
+      const y0 = Math.round(h * 0.2);
+      const y1 = Math.round(h * 0.8);
+      for (let y = y0; y < y1; y++) {
+        if (data[y * w + x] > 0) score++;
+      }
+      if (score > bestScore) { bestScore = score; bestPos = x; }
+    }
+  } else if (side === 'right') {
+    const maxScan = Math.round(w * scanRange);
+    for (let x = w - 1; x >= w - maxScan; x--) {
+      let score = 0;
+      const y0 = Math.round(h * 0.2);
+      const y1 = Math.round(h * 0.8);
+      for (let y = y0; y < y1; y++) {
+        if (data[y * w + x] > 0) score++;
+      }
+      if (score > bestScore) { bestScore = score; bestPos = x; }
+    }
+  }
+
+  // Require a minimum edge strength
+  const minScore = (side === 'top' || side === 'bottom') ?
+    Math.round((w * 0.6) * 0.1) : Math.round((h * 0.6) * 0.1);
+  
+  console.log(`[_findEdgeLine] ${side}: bestPos=${bestPos}, score=${bestScore}, min=${minScore}`);
+  return bestScore >= minScore ? bestPos : null;
 }
 
 /**
