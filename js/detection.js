@@ -8,7 +8,7 @@
 import {
   BALL_COLORS, BALL_DIAMETER, BALL_RADIUS,
   TABLE_WIDTH, TABLE_LENGTH
-} from './table-config.js?v=1771964972';
+} from './table-config.js?v=1771969564';
 
 const TABLE_ASPECT = TABLE_LENGTH / TABLE_WIDTH; // ~2.0
 const ASPECT_TOLERANCE = 0.6;

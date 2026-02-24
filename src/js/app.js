@@ -5,11 +5,12 @@
  * User takes a photo, then taps cue ball → target ball → pocket.
  */
 
-import { Camera } from './camera.js?v=1771964972';
-import { BallDetector, loadOpenCV, isOpenCVReady, detectTable } from './detection.js?v=1771964972';
-import { Renderer } from './renderer.js?v=1771964972';
-import { BankShotCalculator } from './physics.js?v=1771964972';
-import { createSyntheticBalls, TABLE_WIDTH, TABLE_LENGTH, BALL_DIAMETER, POCKETS } from './table-config.js?v=1771964972';
+import { Camera } from './camera.js?v=1771969564';
+import { BallDetector, loadOpenCV, isOpenCVReady, detectTable } from './detection.js?v=1771969564';
+import { loadTableDetector, isDetectorReady, detectTableRegion, refineTableWithCV } from './table-detector.js?v=1771969564';
+import { Renderer } from './renderer.js?v=1771969564';
+import { BankShotCalculator } from './physics.js?v=1771969564';
+import { createSyntheticBalls, TABLE_WIDTH, TABLE_LENGTH, BALL_DIAMETER, POCKETS } from './table-config.js?v=1771969564';
 
 const STATE = {
   LOADING:         'loading',
@@ -72,14 +73,17 @@ class App {
       this._setState(STATE.VIEWFINDER);
     }
 
-    // Load OpenCV in background
-    try {
-      await loadOpenCV((msg) => {
-        if (this.state === STATE.VIEWFINDER) this._setStatus(msg + ' — Point at table and tap 📸');
-      });
-    } catch (e) {
-      console.warn('OpenCV failed:', e);
-    }
+    // Load both models in background
+    const loadPromises = [];
+    loadPromises.push(loadOpenCV((msg) => {
+      if (this.state === STATE.VIEWFINDER) this._setStatus(msg + ' — Point at table and tap 📸');
+    }).catch(e => console.warn('OpenCV failed:', e)));
+
+    loadPromises.push(loadTableDetector((msg) => {
+      if (this.state === STATE.VIEWFINDER) this._setStatus(msg);
+    }).catch(e => console.warn('COCO-SSD failed:', e)));
+
+    await Promise.all(loadPromises);
 
     this._renderLoop();
   }
@@ -218,22 +222,52 @@ class App {
     }, 100);
   }
 
-  _processCapture() {
-    if (!this._captureImageData || !isOpenCVReady()) {
+  async _processCapture() {
+    if (!this._captureImageData) {
       this._enterDemoMode();
       return;
     }
 
-    // Detect table — MUST succeed before we look for balls
-    let tableResult = null;
-    try {
-      tableResult = detectTable(this._captureImageData);
-      console.log('[App] Table detection:', tableResult);
-    } catch (e) {
-      console.error('[App] Table detection error:', e);
+    this._setStatus('Detecting table...');
+
+    // Strategy 1: COCO-SSD to find table bounding box, then CV to refine
+    let tableCorners = null;
+
+    if (isDetectorReady()) {
+      try {
+        // Use the captured image element for TF.js detection
+        const tableRegion = await detectTableRegion(this.capturedCanvas);
+        if (tableRegion) {
+          console.log(`[App] COCO-SSD found: ${tableRegion.label} (${(tableRegion.confidence*100).toFixed(0)}%)`);
+          this._setStatus('Table found — refining edges...');
+
+          // Draw bbox for debug
+          this._debugBbox = tableRegion.bbox;
+
+          // Refine with OpenCV if available
+          if (isOpenCVReady()) {
+            tableCorners = refineTableWithCV(this._captureImageData, tableRegion.bbox);
+          }
+        }
+      } catch (e) {
+        console.error('[App] COCO-SSD error:', e);
+      }
     }
 
-    if (!tableResult || tableResult.confidence < 0.15) {
+    // Strategy 2: Fallback to pure OpenCV felt detection
+    if (!tableCorners && isOpenCVReady()) {
+      console.log('[App] Falling back to OpenCV-only detection');
+      try {
+        const tableResult = detectTable(this._captureImageData);
+        if (tableResult && tableResult.confidence >= 0.15) {
+          tableCorners = tableResult.corners;
+        }
+      } catch (e) {
+        console.error('[App] OpenCV detection error:', e);
+      }
+    }
+
+    if (!tableCorners) {
       this.tableCorners = null;
       this.balls = [];
       this.renderer.clearPhotoMode();
@@ -242,10 +276,8 @@ class App {
       return;
     }
 
-    this.tableCorners = tableResult.corners;
+    this.tableCorners = tableCorners;
     this.balls = [];
-
-    // For now, just show the table outline — no ball detection yet
     console.log('[App] Table corners (BL,BR,TR,TL):', this.tableCorners);
 
     this.selectedCue = null;
