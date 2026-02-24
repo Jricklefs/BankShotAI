@@ -8,7 +8,7 @@
 import {
   BALL_COLORS, BALL_DIAMETER, BALL_RADIUS,
   TABLE_WIDTH, TABLE_LENGTH
-} from './table-config.js?v=1771964797';
+} from './table-config.js?v=1771964899';
 
 const TABLE_ASPECT = TABLE_LENGTH / TABLE_WIDTH; // ~2.0
 const ASPECT_TOLERANCE = 0.6;
@@ -254,23 +254,18 @@ function _detectBumperEdges(bgr, feltQuad, cleanup, mat) {
     const warped = mat(new cv.Mat());
     cv.warpPerspective(bgr, warped, M, new cv.Size(dstW, dstH));
 
-    // Convert to grayscale and run Canny
+    // Convert to grayscale for intensity scanning
     const gray = mat(new cv.Mat());
     cv.cvtColor(warped, gray, cv.COLOR_BGR2GRAY);
     const blurred = mat(new cv.Mat());
-    cv.GaussianBlur(gray, blurred, new cv.Size(3, 3), 0);
-    const edges = mat(new cv.Mat());
-    cv.Canny(blurred, edges, 50, 150);
+    cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
 
-    // Scan inward from each edge to find the bumper line
-    // The bumper creates a strong edge ~5-15% inward from the felt boundary
-    const scanRange = 0.20; // scan up to 20% inward
-    
-    // For each edge, look at intensity profile and find strongest edge
-    const topY = _findEdgeLine(edges, 'top', dstW, dstH, scanRange);
-    const botY = _findEdgeLine(edges, 'bottom', dstW, dstH, scanRange);
-    const leftX = _findEdgeLine(edges, 'left', dstW, dstH, scanRange);
-    const rightX = _findEdgeLine(edges, 'right', dstW, dstH, scanRange);
+    // Scan inward from each edge: find where intensity jumps from dark (rail/rubber) to bright (felt)
+    // This transition is exactly the cushion nose
+    const topY = _findBrightnessEdge(blurred, 'top', dstW, dstH);
+    const botY = _findBrightnessEdge(blurred, 'bottom', dstW, dstH);
+    const leftX = _findBrightnessEdge(blurred, 'left', dstW, dstH);
+    const rightX = _findBrightnessEdge(blurred, 'right', dstW, dstH);
 
     console.log(`[_detectBumperEdges] top=${topY}, bottom=${botY}, left=${leftX}, right=${rightX}`);
 
@@ -303,73 +298,74 @@ function _detectBumperEdges(bgr, feltQuad, cleanup, mat) {
 }
 
 /**
- * Scan from one edge inward looking for the strongest edge line.
+ * Scan from one edge inward looking for the dark→bright intensity transition.
+ * The cushion nose is where the dark rail/rubber transitions to bright felt.
  * Returns the coordinate (X or Y) of the bumper edge.
  */
-function _findEdgeLine(edges, side, w, h, scanRange) {
-  const data = edges.data;
-  let bestScore = 0;
-  let bestPos = null;
+function _findBrightnessEdge(gray, side, w, h) {
+  const data = gray.data;  // uint8 grayscale
+  const scanRange = 0.25;  // scan up to 25% inward
 
-  // Skip the first 3% from each edge to avoid the warped boundary artifact
-  const skip = 0.03;
+  // Compute average intensity along a line (middle 60% to avoid pockets)
+  function avgIntensity(pos, isHorizontal) {
+    let sum = 0, count = 0;
+    if (isHorizontal) {
+      const x0 = Math.round(w * 0.2), x1 = Math.round(w * 0.8);
+      for (let x = x0; x < x1; x++) {
+        sum += data[pos * w + x];
+        count++;
+      }
+    } else {
+      const y0 = Math.round(h * 0.2), y1 = Math.round(h * 0.8);
+      for (let y = y0; y < y1; y++) {
+        sum += data[y * w + pos];
+        count++;
+      }
+    }
+    return sum / count;
+  }
+
+  // Find the biggest intensity jump (gradient) scanning inward
+  let bestGrad = 0;
+  let bestPos = null;
+  const kernel = 3; // compare average of 3 lines
 
   if (side === 'top') {
-    const startY = Math.round(h * skip);
-    const maxScan = Math.round(h * scanRange);
-    for (let y = startY; y < maxScan; y++) {
-      let score = 0;
-      const x0 = Math.round(w * 0.2);
-      const x1 = Math.round(w * 0.8);
-      for (let x = x0; x < x1; x++) {
-        if (data[y * w + x] > 0) score++;
-      }
-      if (score > bestScore) { bestScore = score; bestPos = y; }
+    const maxY = Math.round(h * scanRange);
+    for (let y = 2; y < maxY - kernel; y++) {
+      const before = avgIntensity(y - 1, true);
+      const after = avgIntensity(y + kernel, true);
+      const grad = after - before;  // bright felt is higher intensity
+      if (grad > bestGrad) { bestGrad = grad; bestPos = y; }
     }
   } else if (side === 'bottom') {
-    const endY = Math.round(h * (1 - skip));
-    const maxScan = Math.round(h * scanRange);
-    for (let y = endY; y >= h - maxScan; y--) {
-      let score = 0;
-      const x0 = Math.round(w * 0.2);
-      const x1 = Math.round(w * 0.8);
-      for (let x = x0; x < x1; x++) {
-        if (data[y * w + x] > 0) score++;
-      }
-      if (score > bestScore) { bestScore = score; bestPos = y; }
+    const minY = Math.round(h * (1 - scanRange));
+    for (let y = h - 3; y > minY + kernel; y--) {
+      const before = avgIntensity(y + 1, true);
+      const after = avgIntensity(y - kernel, true);
+      const grad = after - before;
+      if (grad > bestGrad) { bestGrad = grad; bestPos = y; }
     }
   } else if (side === 'left') {
-    const startX = Math.round(w * skip);
-    const maxScan = Math.round(w * scanRange);
-    for (let x = startX; x < maxScan; x++) {
-      let score = 0;
-      const y0 = Math.round(h * 0.2);
-      const y1 = Math.round(h * 0.8);
-      for (let y = y0; y < y1; y++) {
-        if (data[y * w + x] > 0) score++;
-      }
-      if (score > bestScore) { bestScore = score; bestPos = x; }
+    const maxX = Math.round(w * scanRange);
+    for (let x = 2; x < maxX - kernel; x++) {
+      const before = avgIntensity(x - 1, false);
+      const after = avgIntensity(x + kernel, false);
+      const grad = after - before;
+      if (grad > bestGrad) { bestGrad = grad; bestPos = x; }
     }
   } else if (side === 'right') {
-    const endX = Math.round(w * (1 - skip));
-    const maxScan = Math.round(w * scanRange);
-    for (let x = endX; x >= w - maxScan; x--) {
-      let score = 0;
-      const y0 = Math.round(h * 0.2);
-      const y1 = Math.round(h * 0.8);
-      for (let y = y0; y < y1; y++) {
-        if (data[y * w + x] > 0) score++;
-      }
-      if (score > bestScore) { bestScore = score; bestPos = x; }
+    const minX = Math.round(w * (1 - scanRange));
+    for (let x = w - 3; x > minX + kernel; x--) {
+      const before = avgIntensity(x + 1, false);
+      const after = avgIntensity(x - kernel, false);
+      const grad = after - before;
+      if (grad > bestGrad) { bestGrad = grad; bestPos = x; }
     }
   }
 
-  // Require a minimum edge strength (low threshold — even faint cushion lines count)
-  const minScore = (side === 'top' || side === 'bottom') ?
-    Math.round((w * 0.6) * 0.03) : Math.round((h * 0.6) * 0.03);
-  
-  console.log(`[_findEdgeLine] ${side}: bestPos=${bestPos}, score=${bestScore}, min=${minScore}`);
-  return bestScore >= minScore ? bestPos : null;
+  console.log(`[_findBrightnessEdge] ${side}: bestPos=${bestPos}, gradient=${bestGrad.toFixed(1)}`);
+  return bestGrad > 5 ? bestPos : null;  // minimum 5 intensity units jump
 }
 
 /**
