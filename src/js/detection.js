@@ -1,9 +1,8 @@
 /**
  * BankShotAI - Detection Module
  *
- * Auto-detects pool table via edge/geometry detection (color-agnostic).
- * Uses Canny + contour finding to locate the largest ~2:1 rectangle.
- * Then detects balls via HoughCircles + color classification.
+ * Table detection: dominant color region → largest quadrilateral (any felt color).
+ * Ball detection: perspective warp → HoughCircles → felt-color rejection → color classification.
  */
 
 import {
@@ -11,9 +10,8 @@ import {
   TABLE_WIDTH, TABLE_LENGTH
 } from './table-config.js';
 
-// Expected table aspect ratio (long/short ≈ 2:1)
 const TABLE_ASPECT = TABLE_LENGTH / TABLE_WIDTH; // ~2.0
-const ASPECT_TOLERANCE = 0.4; // allow 1.6 to 2.4
+const ASPECT_TOLERANCE = 0.6;
 
 let cvReady = false;
 let cvLoadPromise = null;
@@ -59,26 +57,10 @@ export function loadOpenCV(onProgress) {
 export function isOpenCVReady() { return cvReady; }
 
 /**
- * @typedef {Object} DetectedBall
- * @property {number} x - table x (mm)
- * @property {number} y - table y (mm)
- * @property {string} color
- * @property {number} number
- * @property {boolean} isStriped
- * @property {number} confidence
- * @property {number} pixelX
- * @property {number} pixelY
- * @property {number} pixelRadius
- */
-
-/**
  * Auto-detect the pool table from a camera frame.
- * Color-agnostic: uses Canny edge detection → contour finding → largest
- * quadrilateral with ~2:1 aspect ratio (pool table proportions).
- *
- * @param {ImageData} imageData
- * @returns {{ corners: number[][], confidence: number } | null}
- *   corners in order: bottom-left, bottom-right, top-right, top-left (video pixel coords)
+ * Strategy: find the dominant uniform color region (the felt),
+ * then approximate it as a quadrilateral.
+ * Works with any felt color (green, blue, red, etc.)
  */
 export function detectTable(imageData) {
   if (!cvReady) return null;
@@ -88,78 +70,83 @@ export function detectTable(imageData) {
 
   try {
     const src = mat(cv.matFromImageData(imageData));
-    const gray = mat(new cv.Mat());
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    const bgr = mat(new cv.Mat());
+    cv.cvtColor(src, bgr, cv.COLOR_RGBA2BGR);
+    const hsv = mat(new cv.Mat());
+    cv.cvtColor(bgr, hsv, cv.COLOR_BGR2HSV);
 
-    // Bilateral filter preserves edges while smoothing
-    const filtered = mat(new cv.Mat());
-    cv.bilateralFilter(gray, filtered, 9, 75, 75);
+    // Sample center region to find dominant felt color
+    const w = imageData.width, h = imageData.height;
+    const roi = hsv.roi(new cv.Rect(
+      Math.round(w * 0.25), Math.round(h * 0.25),
+      Math.round(w * 0.5), Math.round(h * 0.5)
+    ));
+    const mean = cv.mean(roi);
+    roi.delete();
+    const mH = mean[0], mS = mean[1], mV = mean[2];
 
-    // Canny edge detection
-    const edges = mat(new cv.Mat());
-    cv.Canny(filtered, edges, 30, 100);
+    console.log(`[detectTable] Center HSV: H=${mH.toFixed(0)}, S=${mS.toFixed(0)}, V=${mV.toFixed(0)}`);
 
-    // Dilate edges to close small gaps
-    const kernel = mat(cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3)));
-    const dilated = mat(new cv.Mat());
-    cv.dilate(edges, dilated, kernel, new cv.Point(-1, -1), 2);
+    // Create felt mask using the dominant color
+    const lo = mat(new cv.Mat(1, 1, cv.CV_8UC3, new cv.Scalar(
+      Math.max(0, mH - 20), Math.max(20, mS - 60), Math.max(20, mV - 60)
+    )));
+    const hi = mat(new cv.Mat(1, 1, cv.CV_8UC3, new cv.Scalar(
+      Math.min(180, mH + 20), Math.min(255, mS + 60), Math.min(255, mV + 60)
+    )));
+    const mask = mat(new cv.Mat());
+    cv.inRange(hsv, lo, hi, mask);
+
+    // Morphological cleanup
+    const kernel = mat(cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(15, 15)));
+    cv.morphologyEx(mask, mask, cv.MORPH_CLOSE, kernel);
+    cv.morphologyEx(mask, mask, cv.MORPH_OPEN, kernel);
 
     // Find contours
     const contours = mat(new cv.MatVector());
     const hierarchy = mat(new cv.Mat());
-    cv.findContours(dilated, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+    cv.findContours(mask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
-    const totalArea = imageData.width * imageData.height;
+    const totalArea = w * h;
     let bestQuad = null;
-    let bestScore = 0; // higher = better
+    let bestArea = 0;
 
     for (let i = 0; i < contours.size(); i++) {
       const contour = contours.get(i);
       const area = cv.contourArea(contour);
-
-      // Table should be at least 5% of frame
-      if (area < totalArea * 0.05) continue;
+      if (area < totalArea * 0.1) continue;  // Table should be ≥10% of frame
+      if (area <= bestArea) continue;
 
       const peri = cv.arcLength(contour, true);
-
-      // Try multiple epsilon values to find a 4-point approximation
-      for (const epsFactor of [0.015, 0.02, 0.03, 0.04, 0.05]) {
+      for (const eps of [0.02, 0.03, 0.04, 0.05, 0.06]) {
         const approx = mat(new cv.Mat());
-        cv.approxPolyDP(contour, approx, epsFactor * peri, true);
+        cv.approxPolyDP(contour, approx, eps * peri, true);
 
-        if (approx.rows !== 4) continue;
-        if (!cv.isContourConvex(approx)) continue;
+        if (approx.rows === 4) {
+          const pts = [];
+          for (let j = 0; j < 4; j++) {
+            pts.push([approx.data32S[j * 2], approx.data32S[j * 2 + 1]]);
+          }
 
-        // Extract points
-        const pts = [];
-        for (let j = 0; j < 4; j++) {
-          pts.push([approx.data32S[j * 2], approx.data32S[j * 2 + 1]]);
-        }
+          // Check aspect ratio
+          const ordered = _orderCorners(pts);
+          const aspect = _quadAspect(ordered);
+          if (Math.abs(aspect - TABLE_ASPECT) > ASPECT_TOLERANCE) break;
 
-        // Check aspect ratio ≈ 2:1
-        const ordered = _orderCorners(pts);
-        const aspect = _quadAspect(ordered);
-        if (Math.abs(aspect - TABLE_ASPECT) > ASPECT_TOLERANCE) continue;
-
-        // Check all interior angles are roughly 90° (between 60° and 120°)
-        if (!_anglesNearRight(ordered)) continue;
-
-        // Score: prefer larger area, better aspect match
-        const areaRatio = area / totalArea;
-        const aspectPenalty = Math.abs(aspect - TABLE_ASPECT) / ASPECT_TOLERANCE;
-        const score = areaRatio * (1 - aspectPenalty * 0.5);
-
-        if (score > bestScore) {
-          bestScore = score;
+          bestArea = area;
           bestQuad = ordered;
+          break;
         }
-        break; // found a valid quad at this epsilon, move on
       }
     }
 
-    if (!bestQuad) return null;
+    if (!bestQuad) {
+      console.log('[detectTable] No valid table quadrilateral found');
+      return null;
+    }
 
-    const confidence = Math.min(1, bestScore / 0.15);
+    console.log(`[detectTable] Found table: ${(bestArea/totalArea*100).toFixed(1)}% of frame, corners:`, bestQuad);
+    const confidence = Math.min(1, (bestArea / totalArea) / 0.3);
     return { corners: bestQuad, confidence };
   } catch (e) {
     console.error('Table detection error:', e);
@@ -171,76 +158,45 @@ export function detectTable(imageData) {
   }
 }
 
-/** Compute aspect ratio (long side / short side) of an ordered quadrilateral. */
 function _quadAspect(corners) {
-  // corners: BL, BR, TR, TL
   const d = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
   const bottom = d(corners[0], corners[1]);
   const right  = d(corners[1], corners[2]);
   const top    = d(corners[2], corners[3]);
   const left   = d(corners[3], corners[0]);
-
-  const avgShort = (bottom + top) / 2;
-  const avgLong  = (left + right) / 2;
-
-  // Return long/short regardless of orientation
-  return avgLong > avgShort ? avgLong / avgShort : avgShort / avgLong;
+  const avgW = (bottom + top) / 2;
+  const avgH = (left + right) / 2;
+  return Math.max(avgW, avgH) / Math.min(avgW, avgH);
 }
 
-/** Check that all 4 interior angles are between 60° and 120°. */
-function _anglesNearRight(corners) {
-  for (let i = 0; i < 4; i++) {
-    const a = corners[i];
-    const b = corners[(i + 1) % 4];
-    const c = corners[(i + 2) % 4];
-    const ba = [a[0] - b[0], a[1] - b[1]];
-    const bc = [c[0] - b[0], c[1] - b[1]];
-    const dot = ba[0] * bc[0] + ba[1] * bc[1];
-    const mag = Math.hypot(...ba) * Math.hypot(...bc);
-    if (mag < 1e-6) return false;
-    const angle = Math.acos(Math.max(-1, Math.min(1, dot / mag))) * (180 / Math.PI);
-    if (angle < 60 || angle > 120) return false;
-  }
-  return true;
-}
-
-/**
- * Order 4 points as: bottom-left, bottom-right, top-right, top-left.
- * "Bottom" = higher Y value in image coords (lower on table).
- */
 function _orderCorners(pts) {
-  // Sort by sum (x+y) and difference (x-y)
+  // Order by sum (x+y) and difference (y-x)
   const sorted = [...pts];
+  // TL = min sum, BR = max sum, TR = min (y-x), BL = max (y-x)
+  sorted.sort((a, b) => (a[0] + a[1]) - (b[0] + b[1]));
+  const tl = sorted[0];
+  const br = sorted[3];
+  // Of the middle two, TR has smaller y (or larger x)
+  const mid = [sorted[1], sorted[2]];
+  mid.sort((a, b) => a[1] - b[1]);  // sort by y ascending
+  const tr = mid[0];
+  const bl = mid[1];
 
-  // Centroid
-  const cx = pts.reduce((s, p) => s + p[0], 0) / 4;
-  const cy = pts.reduce((s, p) => s + p[1], 0) / 4;
-
-  const topLeft = sorted.find(p => p[0] < cx && p[1] < cy) || sorted[0];
-  const topRight = sorted.find(p => p[0] >= cx && p[1] < cy) || sorted[1];
-  const bottomRight = sorted.find(p => p[0] >= cx && p[1] >= cy) || sorted[2];
-  const bottomLeft = sorted.find(p => p[0] < cx && p[1] >= cy) || sorted[3];
-
-  // Return: bottom-left, bottom-right, top-right, top-left
-  return [bottomLeft, bottomRight, topRight, topLeft];
+  return [bl, br, tr, tl]; // BL, BR, TR, TL
 }
 
 
 export class BallDetector {
   constructor() {
     this.transformMatrix = null;
-    // Store the inverse transform and warp dimensions for coordinate mapping
     this.inverseMatrix = null;
     this.warpWidth = 0;
     this.warpHeight = 0;
+    this._feltH = 0;
+    this._feltS = 0;
+    this._feltV = 0;
   }
 
-  /**
-   * Detect balls from an ImageData with table corners.
-   * @param {ImageData} imageData
-   * @param {number[][]} tableCorners - 4 corners [BL, BR, TR, TL] in pixel coords
-   * @returns {DetectedBall[]}
-   */
   detect(imageData, tableCorners = null) {
     if (!cvReady) throw new Error('OpenCV not loaded');
 
@@ -257,10 +213,13 @@ export class BallDetector {
       warped = bgr;
     }
 
+    // Detect felt color from warped image center
+    this._detectFeltColor(warped);
+
     const circles = this._findCircles(warped);
     const balls = [];
 
-    console.log(`[BallDetector] Found ${circles.length} circle candidates in warped image (${warped.cols}x${warped.rows})`);
+    console.log(`[BallDetector] ${circles.length} circle candidates after filtering`);
 
     for (const [cx, cy, r] of circles) {
       const result = this._classifyBall(warped, cx, cy, r);
@@ -273,18 +232,16 @@ export class BallDetector {
       balls.push({ x: tx, y: ty, color, number, isStriped, confidence, pixelX: cx, pixelY: cy, pixelRadius: r });
     }
 
-    console.log(`[BallDetector] Classified ${balls.length} balls:`, balls.map(b => `${b.color}(${b.number})`).join(', '));
+    console.log(`[BallDetector] ${balls.length} classified balls:`, balls.map(b => `${b.color}(${b.number})`).join(', '));
 
     warped.delete();
     return this._resolveDuplicates(balls);
   }
 
   _warpToTable(bgr, corners) {
-    // Increased scale from 0.5 to 1.0 px/mm for better circle detection
     const scale = 1.0;
     const dstW = Math.round(TABLE_WIDTH * scale);
     const dstH = Math.round(TABLE_LENGTH * scale);
-
     this.warpWidth = dstW;
     this.warpHeight = dstH;
 
@@ -295,8 +252,6 @@ export class BallDetector {
 
     const M = cv.getPerspectiveTransform(srcPts, dstPts);
     this.transformMatrix = M.clone();
-
-    // Compute inverse transform (table warped coords → original photo coords)
     const Minv = cv.getPerspectiveTransform(dstPts, srcPts);
     this.inverseMatrix = Minv.clone();
 
@@ -305,6 +260,29 @@ export class BallDetector {
 
     srcPts.delete(); dstPts.delete(); M.delete(); Minv.delete();
     return warped;
+  }
+
+  _detectFeltColor(bgr) {
+    const hsv = new cv.Mat();
+    cv.cvtColor(bgr, hsv, cv.COLOR_BGR2HSV);
+    const w = bgr.cols, h = bgr.rows;
+    const roi = hsv.roi(new cv.Rect(
+      Math.round(w * 0.3), Math.round(h * 0.3),
+      Math.round(w * 0.4), Math.round(h * 0.4)
+    ));
+    const mean = cv.mean(roi);
+    roi.delete(); hsv.delete();
+    this._feltH = mean[0];
+    this._feltS = mean[1];
+    this._feltV = mean[2];
+    console.log(`[BallDetector] Felt HSV: H=${this._feltH.toFixed(0)}, S=${this._feltS.toFixed(0)}, V=${this._feltV.toFixed(0)}`);
+  }
+
+  _isFeltColor(h, s, v) {
+    // Check if a pixel's HSV is close to the felt color
+    return Math.abs(h - this._feltH) < 20 &&
+           Math.abs(s - this._feltS) < 50 &&
+           Math.abs(v - this._feltV) < 50;
   }
 
   _findCircles(bgr) {
@@ -318,24 +296,22 @@ export class BallDetector {
     const w = bgr.cols, h = bgr.rows;
     const pxPerMm = w / TABLE_WIDTH;
     const expectedR = Math.round(BALL_RADIUS * pxPerMm);
-    const minR = Math.max(5, Math.round(expectedR * 0.5));
-    const maxR = Math.max(10, Math.round(expectedR * 1.8));
-    const minDist = Math.max(10, Math.round(expectedR * 1.6));
+    const minR = Math.max(8, Math.round(expectedR * 0.6));
+    const maxR = Math.max(15, Math.round(expectedR * 1.5));
+    const minDist = Math.max(20, Math.round(expectedR * 2.0));
 
-    console.log(`[BallDetector] Warped image: ${w}x${h}, pxPerMm=${pxPerMm.toFixed(2)}, expectedR=${expectedR}, range=[${minR},${maxR}], minDist=${minDist}`);
+    console.log(`[BallDetector] Image: ${w}x${h}, expectedR=${expectedR}, range=[${minR},${maxR}]`);
 
-    // Auto-detect felt color and create mask
-    const hsv = new cv.Mat();
-    cv.cvtColor(bgr, hsv, cv.COLOR_BGR2HSV);
-    const feltMask = this._autoFeltMask(hsv, w, h);
-
-    // Use CLAHE for better contrast on the blurred image
+    // Detect circles — param2=25 is a good balance for warped images
     const circles = new cv.Mat();
-    // Reduced param2 from 30 to 20 for more sensitive detection
-    cv.HoughCircles(blurred, circles, cv.HOUGH_GRADIENT, 1.2, minDist, 50, 20, minR, maxR);
+    cv.HoughCircles(blurred, circles, cv.HOUGH_GRADIENT, 1.2, minDist, 50, 25, minR, maxR);
     blurred.delete();
 
     console.log(`[BallDetector] HoughCircles raw: ${circles.cols} circles`);
+
+    // Get HSV for felt filtering
+    const hsv = new cv.Mat();
+    cv.cvtColor(bgr, hsv, cv.COLOR_BGR2HSV);
 
     const result = [];
     for (let i = 0; i < circles.cols; i++) {
@@ -343,81 +319,45 @@ export class BallDetector {
       const cy = Math.round(circles.data32F[i * 3 + 1]);
       const r = Math.round(circles.data32F[i * 3 + 2]);
 
-      if (cx >= 0 && cx < w && cy >= 0 && cy < h) {
-        // Check that the circle center is NOT on felt (i.e., it's a ball)
-        // Sample a small area around center — if mostly felt, skip
-        const sampleR = Math.max(2, Math.round(r * 0.4));
-        const y1 = Math.max(0, cy - sampleR), y2 = Math.min(h, cy + sampleR);
-        const x1 = Math.max(0, cx - sampleR), x2 = Math.min(w, cx + sampleR);
-        let feltCount = 0, count = 0;
-        for (let yy = y1; yy < y2; yy++) {
-          for (let xx = x1; xx < x2; xx++) {
-            feltCount += feltMask.ucharAt(yy, xx) > 0 ? 1 : 0;
-            count++;
+      if (cx < r || cx >= w - r || cy < r || cy >= h - r) continue;
+
+      // Check if center pixel is felt-colored → skip (it's not a ball)
+      const ch = hsv.ucharAt(cy, cx * 3);
+      const cs = hsv.ucharAt(cy, cx * 3 + 1);
+      const cv_ = hsv.ucharAt(cy, cx * 3 + 2);
+
+      if (this._isFeltColor(ch, cs, cv_)) {
+        // Sample a few more points inside the circle to be sure
+        let feltCount = 0;
+        const samples = [[0,0], [-r/2,0], [r/2,0], [0,-r/2], [0,r/2]];
+        for (const [dx, dy] of samples) {
+          const sx = Math.round(cx + dx), sy = Math.round(cy + dy);
+          if (sx >= 0 && sx < w && sy >= 0 && sy < h) {
+            const sh = hsv.ucharAt(sy, sx * 3);
+            const ss = hsv.ucharAt(sy, sx * 3 + 1);
+            const sv = hsv.ucharAt(sy, sx * 3 + 2);
+            if (this._isFeltColor(sh, ss, sv)) feltCount++;
           }
         }
-        const feltRatio = count > 0 ? feltCount / count : 1;
-        // Only skip if the CENTER is overwhelmingly felt (>80%)
-        // This prevents filtering out balls that sit on felt
-        if (feltRatio < 0.80) {
-          result.push([cx, cy, r]);
-        } else {
-          console.log(`[BallDetector] Skipping circle at (${cx},${cy}) r=${r}: feltRatio=${feltRatio.toFixed(2)}`);
-        }
+        // If most samples are felt, skip this circle
+        if (feltCount >= 3) continue;
       }
+
+      result.push([cx, cy, r]);
     }
 
-    circles.delete(); feltMask.delete(); hsv.delete();
+    circles.delete(); hsv.delete();
     console.log(`[BallDetector] After felt filter: ${result.length} circles`);
     return result;
-  }
-
-  /**
-   * Auto-detect felt color by sampling the center of the (warped) table image.
-   * Returns a mask where felt pixels = 255.
-   */
-  _autoFeltMask(hsv, w, h) {
-    // Sample center 40% of image (most likely pure felt, no rails)
-    const cx1 = Math.round(w * 0.3), cx2 = Math.round(w * 0.7);
-    const cy1 = Math.round(h * 0.3), cy2 = Math.round(h * 0.7);
-    const roi = hsv.roi(new cv.Rect(cx1, cy1, cx2 - cx1, cy2 - cy1));
-
-    // Compute mean H, S, V of the center region
-    const mean = cv.mean(roi);
-    roi.delete();
-    const meanH = mean[0], meanS = mean[1], meanV = mean[2];
-
-    console.log(`[BallDetector] Felt mean HSV: H=${meanH.toFixed(1)}, S=${meanS.toFixed(1)}, V=${meanV.toFixed(1)}`);
-
-    // Build an HSV range around the dominant felt color
-    // Tighter range so we don't accidentally mask out colored balls
-    const hRange = 15, sRange = 50, vRange = 50;
-    const lo = new cv.Mat(1, 1, cv.CV_8UC3, new cv.Scalar(
-      Math.max(0, meanH - hRange),
-      Math.max(30, meanS - sRange),  // felt should have some saturation
-      Math.max(30, meanV - vRange)
-    ));
-    const hi = new cv.Mat(1, 1, cv.CV_8UC3, new cv.Scalar(
-      Math.min(180, meanH + hRange),
-      Math.min(255, meanS + sRange),
-      Math.min(255, meanV + vRange)
-    ));
-
-    const mask = new cv.Mat();
-    cv.inRange(hsv, lo, hi, mask);
-    lo.delete(); hi.delete();
-    return mask;
   }
 
   _classifyBall(bgr, cx, cy, r) {
     const h = bgr.rows, w = bgr.cols;
     const y1 = Math.max(0, cy - r), y2 = Math.min(h, cy + r);
     const x1 = Math.max(0, cx - r), x2 = Math.min(w, cx + r);
-    if (x2 - x1 < 2 || y2 - y1 < 2) return null;
+    if (x2 - x1 < 4 || y2 - y1 < 4) return null;
 
     const roi = bgr.roi(new cv.Rect(x1, y1, x2 - x1, y2 - y1));
-    if (roi.rows === 0 || roi.cols === 0) { roi.delete(); return null; }
-
     const mask = new cv.Mat.zeros(roi.rows, roi.cols, cv.CV_8UC1);
     const cr = Math.min(r, Math.floor(roi.rows / 2), Math.floor(roi.cols / 2));
     cv.circle(mask, new cv.Point(Math.floor(roi.cols / 2), Math.floor(roi.rows / 2)), cr, new cv.Scalar(255), -1);
@@ -428,7 +368,7 @@ export class BallDetector {
     // Check white ratio
     const whiteMask = new cv.Mat();
     const wlo = new cv.Mat(1, 1, cv.CV_8UC3, new cv.Scalar(0, 0, 170));
-    const whi = new cv.Mat(1, 1, cv.CV_8UC3, new cv.Scalar(180, 55, 255));
+    const whi = new cv.Mat(1, 1, cv.CV_8UC3, new cv.Scalar(180, 50, 255));
     cv.inRange(hsvRoi, wlo, whi, whiteMask);
     wlo.delete(); whi.delete();
     const whiteInBall = new cv.Mat();
@@ -437,6 +377,7 @@ export class BallDetector {
     const whiteRatio = maskCount > 0 ? cv.countNonZero(whiteInBall) / maskCount : 0;
     whiteMask.delete(); whiteInBall.delete();
 
+    // Score each color
     let bestColor = null, bestScore = 0;
     for (const [colorName, info] of Object.entries(BALL_COLORS)) {
       const colorMask = new cv.Mat();
@@ -447,26 +388,18 @@ export class BallDetector {
       const colorInBall = new cv.Mat();
       cv.bitwise_and(colorMask, mask, colorInBall);
       const score = maskCount > 0 ? cv.countNonZero(colorInBall) / maskCount : 0;
-      // For red2 (wrapping hue), merge with red
-      const effectiveName = colorName === 'red2' ? 'red' : colorName;
-      if (effectiveName === 'red' && bestColor === 'red') {
-        // Add to existing red score
-        bestScore += score;
-      } else if (score > bestScore) {
-        bestScore = score;
-        bestColor = effectiveName;
-      }
+      if (score > bestScore) { bestScore = score; bestColor = colorName; }
       colorMask.delete(); colorInBall.delete();
     }
 
     roi.delete(); mask.delete(); hsvRoi.delete();
 
-    if (!bestColor || bestScore < 0.03) return null;
+    if (!bestColor || bestScore < 0.05) return null;
     if (bestColor === 'white' && whiteRatio > 0.5) return ['white', false, Math.min(1, whiteRatio)];
     if (bestColor === 'black') return ['black', false, Math.min(1, bestScore)];
 
     const isStriped = whiteRatio > 0.12 && whiteRatio < 0.65;
-    const confidence = bestScore > 0.08 ? Math.min(1, bestScore + 0.2) : bestScore;
+    const confidence = bestScore > 0.1 ? Math.min(1, bestScore + 0.2) : bestScore;
     return [bestColor, isStriped, confidence];
   }
 
@@ -488,49 +421,38 @@ export class BallDetector {
     balls.sort((a, b) => b.confidence - a.confidence);
     const kept = [];
     for (const ball of balls) {
-      const tooClose = kept.some(e => Math.hypot(ball.x - e.x, ball.y - e.y) < BALL_DIAMETER * 1.2);
+      const tooClose = kept.some(e => Math.hypot(ball.x - e.x, ball.y - e.y) < BALL_DIAMETER * 1.5);
       if (!tooClose) kept.push(ball);
     }
     return kept;
   }
 
   /**
-   * Map table coordinates (mm) back to original photo pixel coordinates
-   * using the inverse perspective transform.
-   * @param {number} tableX - table x in mm
-   * @param {number} tableY - table y in mm
-   * @returns {number[]} [photoPixelX, photoPixelY]
+   * Convert table coordinates to photo pixel coordinates.
    */
-  tableToPhoto(tableX, tableY) {
-    if (!this.inverseMatrix) return [0, 0];
-    // Convert table coords (mm) to warped pixel coords
-    const warpX = (tableX / TABLE_WIDTH) * this.warpWidth;
-    const warpY = ((TABLE_LENGTH - tableY) / TABLE_LENGTH) * this.warpHeight;
-
+  tableToPhoto(tx, ty) {
+    if (!this.inverseMatrix) return [tx, ty];
+    const px = (tx / TABLE_WIDTH) * this.warpWidth;
+    const py = (1 - ty / TABLE_LENGTH) * this.warpHeight;
     // Apply inverse perspective transform
     const d = this.inverseMatrix.data64F;
-    const denom = d[6] * warpX + d[7] * warpY + d[8];
-    const photoX = (d[0] * warpX + d[1] * warpY + d[2]) / denom;
-    const photoY = (d[3] * warpX + d[4] * warpY + d[5]) / denom;
-    return [photoX, photoY];
+    const denom = d[6] * px + d[7] * py + d[8];
+    const ox = (d[0] * px + d[1] * py + d[2]) / denom;
+    const oy = (d[3] * px + d[4] * py + d[5]) / denom;
+    return [ox, oy];
   }
 
   /**
-   * Map photo pixel coordinates to table coordinates (mm)
-   * using the forward perspective transform.
-   * @param {number} photoX
-   * @param {number} photoY
-   * @returns {number[]} [tableX, tableY] in mm
+   * Convert photo pixel coordinates to table coordinates.
    */
-  photoToTable(photoX, photoY) {
-    if (!this.transformMatrix) return [0, 0];
+  photoToTable(ox, oy) {
+    if (!this.transformMatrix) return [ox, oy];
     const d = this.transformMatrix.data64F;
-    const denom = d[6] * photoX + d[7] * photoY + d[8];
-    const warpX = (d[0] * photoX + d[1] * photoY + d[2]) / denom;
-    const warpY = (d[3] * photoX + d[4] * photoY + d[5]) / denom;
-
-    const tableX = (warpX / this.warpWidth) * TABLE_WIDTH;
-    const tableY = TABLE_LENGTH - (warpY / this.warpHeight) * TABLE_LENGTH;
-    return [tableX, tableY];
+    const denom = d[6] * ox + d[7] * oy + d[8];
+    const px = (d[0] * ox + d[1] * oy + d[2]) / denom;
+    const py = (d[3] * ox + d[4] * oy + d[5]) / denom;
+    const tx = (px / this.warpWidth) * TABLE_WIDTH;
+    const ty = (1 - py / this.warpHeight) * TABLE_LENGTH;
+    return [tx, ty];
   }
 }
