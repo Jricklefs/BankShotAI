@@ -5,11 +5,11 @@
  * User takes a photo, then taps cue ball → target ball → pocket.
  */
 
-import { Camera } from './camera.js?v=1771960650';
-import { BallDetector, loadOpenCV, isOpenCVReady, detectTable } from './detection.js?v=1771960650';
-import { Renderer } from './renderer.js?v=1771960650';
-import { BankShotCalculator } from './physics.js?v=1771960650';
-import { createSyntheticBalls, TABLE_WIDTH, TABLE_LENGTH, BALL_DIAMETER, POCKETS } from './table-config.js?v=1771960650';
+import { Camera } from './camera.js?v=1771960826';
+import { BallDetector, loadOpenCV, isOpenCVReady, detectTable } from './detection.js?v=1771960826';
+import { Renderer } from './renderer.js?v=1771960826';
+import { BankShotCalculator } from './physics.js?v=1771960826';
+import { createSyntheticBalls, TABLE_WIDTH, TABLE_LENGTH, BALL_DIAMETER, POCKETS } from './table-config.js?v=1771960826';
 
 const STATE = {
   LOADING:         'loading',
@@ -111,10 +111,21 @@ class App {
     const h = window.innerHeight;
     this.overlay.width = w;
     this.overlay.height = h;
-    this.capturedCanvas.width = w;
-    this.capturedCanvas.height = h;
+    if (!this._hasCapture) {
+      this.capturedCanvas.width = w;
+      this.capturedCanvas.height = h;
+    }
     this.renderer.resize(w, h);
   }
+
+
+
+
+
+
+
+
+
 
   // --- Photo capture ---
 
@@ -364,6 +375,7 @@ class App {
     this._captureImageData = null;
 
     // Show video, hide captured
+    this._hasCapture = false;
     this.video.classList.remove('hidden');
     this.capturedCanvas.classList.add('hidden');
     this.renderer.clearPhotoMode();
@@ -416,8 +428,10 @@ class App {
       this._photoDrawY = drawY;
       this._photoDrawW = drawW;
       this._photoDrawH = drawH;
+      this._hasCapture = true;
 
       this.capturedCanvas.classList.remove('hidden');
+      console.log(`[App] Drew image ${img.width}x${img.height} → canvas ${cw}x${ch} at (${drawX.toFixed(0)},${drawY.toFixed(0)}) ${drawW.toFixed(0)}x${drawH.toFixed(0)}`);
 
       setTimeout(() => this._processCapture(), 50);
     };
