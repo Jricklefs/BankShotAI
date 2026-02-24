@@ -55,28 +55,30 @@ class App {
     this._bindEvents();
     this._resize();
 
-    // Load OpenCV
-    try {
-      await loadOpenCV((msg) => this._setStatus(msg));
-    } catch (e) {
-      this._setStatus('OpenCV failed — demo mode only');
-    }
-
-    // Start camera
+    // Start camera first (fast) while OpenCV loads in background
     try {
       await this.camera.start();
     } catch (e) {
-      this._setStatus('No camera — using demo mode');
+      console.warn('No camera:', e);
       this._demoMode = true;
     }
 
-    // Hide loading overlay
+    // Show viewfinder immediately while OpenCV loads
     if (this.loadingOverlay) this.loadingOverlay.classList.add('hidden');
 
     if (this._demoMode) {
       this._enterDemoMode();
     } else {
       this._setState(STATE.VIEWFINDER);
+    }
+
+    // Load OpenCV in background
+    try {
+      await loadOpenCV((msg) => {
+        if (this.state === STATE.VIEWFINDER) this._setStatus(msg + ' — Point at table and tap 📸');
+      });
+    } catch (e) {
+      console.warn('OpenCV failed:', e);
     }
 
     this._renderLoop();

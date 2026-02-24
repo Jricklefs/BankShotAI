@@ -15,7 +15,7 @@
     <video id="camera-feed" autoplay playsinline muted></video>
 
     <!-- Frozen captured image (shown after capture) -->
-    <canvas id="captured-image"></canvas>
+    <canvas id="captured-image" class="hidden"></canvas>
 
     <!-- Canvas overlay for drawings -->
     <canvas id="overlay"></canvas>
@@ -30,7 +30,7 @@
     <div id="toolbar"></div>
 
     <!-- Capture button (big circle, camera-style) -->
-    <div id="capture-btn-container" class="hidden">
+    <div id="capture-btn-container">
       <button id="capture-btn" aria-label="Take Photo">
         <div class="capture-ring"></div>
       </button>
