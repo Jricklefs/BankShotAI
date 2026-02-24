@@ -8,7 +8,7 @@
 import {
   BALL_COLORS, BALL_DIAMETER, BALL_RADIUS,
   TABLE_WIDTH, TABLE_LENGTH
-} from './table-config.js?v=1771953752';
+} from './table-config.js?v=1771959216';
 
 const TABLE_ASPECT = TABLE_LENGTH / TABLE_WIDTH; // ~2.0
 const ASPECT_TOLERANCE = 0.6;
@@ -88,14 +88,23 @@ export function detectTable(imageData) {
     console.log(`[detectTable] Center HSV: H=${mH.toFixed(0)}, S=${mS.toFixed(0)}, V=${mV.toFixed(0)}`);
 
     // Create felt mask using the dominant color
-    const lo = mat(new cv.Mat(1, 1, cv.CV_8UC3, new cv.Scalar(
-      Math.max(0, mH - 20), Math.max(20, mS - 60), Math.max(20, mV - 60)
-    )));
-    const hi = mat(new cv.Mat(1, 1, cv.CV_8UC3, new cv.Scalar(
-      Math.min(180, mH + 20), Math.min(255, mS + 60), Math.min(255, mV + 60)
-    )));
+    // Use matFromArray for reliable inRange in OpenCV.js
+    const loH = Math.round(Math.max(0, mH - 20));
+    const loS = Math.round(Math.max(20, mS - 60));
+    const loV = Math.round(Math.max(20, mV - 60));
+    const hiH = Math.round(Math.min(180, mH + 20));
+    const hiS = Math.round(Math.min(255, mS + 60));
+    const hiV = Math.round(Math.min(255, mV + 60));
+    console.log(`[detectTable] Mask range: [${loH},${loS},${loV}] - [${hiH},${hiS},${hiV}]`);
+
+    const lo = mat(cv.matFromArray(1, 1, cv.CV_8UC3, [loH, loS, loV]));
+    const hi = mat(cv.matFromArray(1, 1, cv.CV_8UC3, [hiH, hiS, hiV]));
     const mask = mat(new cv.Mat());
     cv.inRange(hsv, lo, hi, mask);
+
+    // Debug: count non-zero pixels in mask
+    const maskPixels = cv.countNonZero(mask);
+    console.log(`[detectTable] Mask pixels: ${maskPixels} / ${w*h} (${(maskPixels/(w*h)*100).toFixed(1)}%)`);
 
     // Morphological cleanup
     const kernel = mat(cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(15, 15)));
@@ -111,16 +120,20 @@ export function detectTable(imageData) {
     let bestQuad = null;
     let bestArea = 0;
 
+    console.log(`[detectTable] Found ${contours.size()} contours`);
+
     for (let i = 0; i < contours.size(); i++) {
       const contour = contours.get(i);
       const area = cv.contourArea(contour);
-      if (area < totalArea * 0.1) continue;  // Table should be ≥10% of frame
+      console.log(`[detectTable] Contour ${i}: area=${area.toFixed(0)} (${(area/totalArea*100).toFixed(1)}%)`);
+      if (area < totalArea * 0.1) continue;
       if (area <= bestArea) continue;
 
       const peri = cv.arcLength(contour, true);
-      for (const eps of [0.02, 0.03, 0.04, 0.05, 0.06]) {
+      for (const eps of [0.02, 0.03, 0.04, 0.05, 0.06, 0.08, 0.10]) {
         const approx = mat(new cv.Mat());
         cv.approxPolyDP(contour, approx, eps * peri, true);
+        console.log(`[detectTable]   eps=${eps}: ${approx.rows} points`);
 
         if (approx.rows === 4) {
           const pts = [];
@@ -131,7 +144,11 @@ export function detectTable(imageData) {
           // Check aspect ratio
           const ordered = _orderCorners(pts);
           const aspect = _quadAspect(ordered);
-          if (Math.abs(aspect - TABLE_ASPECT) > ASPECT_TOLERANCE) break;
+          console.log(`[detectTable]   4-point quad: aspect=${aspect.toFixed(2)}, target=${TABLE_ASPECT.toFixed(2)}±${ASPECT_TOLERANCE}, corners=`, pts);
+          if (Math.abs(aspect - TABLE_ASPECT) > ASPECT_TOLERANCE) {
+            console.log(`[detectTable]   Rejected: aspect ${aspect.toFixed(2)} outside tolerance`);
+            break;
+          }
 
           bestArea = area;
           bestQuad = ordered;
