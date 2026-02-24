@@ -31,17 +31,18 @@ export const RAIL_RIGHT = TABLE_WIDTH;
 export const RAIL_BOTTOM = 0.0;
 export const RAIL_TOP = TABLE_LENGTH;
 
-// Ball colors with HSV ranges and web-friendly hex/rgb
+// Ball colors with HSV ranges broadened for real-world lighting
 export const BALL_COLORS = {
-  white:  { number: 0,  hsvLow: [0, 0, 200],     hsvHigh: [180, 40, 255],   hex: '#ffffff', rgb: [255, 255, 255] },
-  yellow: { number: 1,  hsvLow: [20, 100, 100],   hsvHigh: [35, 255, 255],   hex: '#ffd700', rgb: [255, 215, 0] },
-  blue:   { number: 2,  hsvLow: [100, 100, 50],   hsvHigh: [130, 255, 255],  hex: '#0000c8', rgb: [0, 0, 200] },
-  red:    { number: 3,  hsvLow: [0, 100, 100],    hsvHigh: [10, 255, 255],   hex: '#c80000', rgb: [200, 0, 0] },
-  purple: { number: 4,  hsvLow: [130, 50, 50],    hsvHigh: [160, 255, 255],  hex: '#800080', rgb: [128, 0, 128] },
-  orange: { number: 5,  hsvLow: [10, 100, 100],   hsvHigh: [20, 255, 255],   hex: '#ff8c00', rgb: [255, 140, 0] },
-  green:  { number: 6,  hsvLow: [35, 100, 50],    hsvHigh: [55, 255, 255],   hex: '#008000', rgb: [0, 128, 0] },
-  maroon: { number: 7,  hsvLow: [0, 50, 30],      hsvHigh: [10, 200, 100],   hex: '#800000', rgb: [128, 0, 0] },
-  black:  { number: 8,  hsvLow: [0, 0, 0],        hsvHigh: [180, 100, 50],   hex: '#000000', rgb: [0, 0, 0] },
+  white:  { number: 0,  hsvLow: [0, 0, 170],     hsvHigh: [180, 55, 255],   hex: '#ffffff', rgb: [255, 255, 255] },
+  yellow: { number: 1,  hsvLow: [15, 80, 80],     hsvHigh: [40, 255, 255],   hex: '#ffd700', rgb: [255, 215, 0] },
+  blue:   { number: 2,  hsvLow: [90, 60, 40],     hsvHigh: [135, 255, 255],  hex: '#0000c8', rgb: [0, 0, 200] },
+  red:    { number: 3,  hsvLow: [0, 80, 70],      hsvHigh: [10, 255, 255],   hex: '#c80000', rgb: [200, 0, 0] },
+  red2:   { number: 3,  hsvLow: [170, 80, 70],    hsvHigh: [180, 255, 255],  hex: '#c80000', rgb: [200, 0, 0] },
+  purple: { number: 4,  hsvLow: [125, 30, 30],    hsvHigh: [165, 255, 255],  hex: '#800080', rgb: [128, 0, 128] },
+  orange: { number: 5,  hsvLow: [8, 80, 80],      hsvHigh: [22, 255, 255],   hex: '#ff8c00', rgb: [255, 140, 0] },
+  green:  { number: 6,  hsvLow: [35, 60, 40],     hsvHigh: [80, 255, 255],   hex: '#008000', rgb: [0, 128, 0] },
+  maroon: { number: 7,  hsvLow: [0, 40, 20],      hsvHigh: [12, 220, 120],   hex: '#800000', rgb: [128, 0, 0] },
+  black:  { number: 8,  hsvLow: [0, 0, 0],        hsvHigh: [180, 120, 60],   hex: '#000000', rgb: [0, 0, 0] },
 };
 
 // Synthetic ball rack for testing

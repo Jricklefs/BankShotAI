@@ -170,6 +170,18 @@ class App {
       this.balls = [];
     }
 
+    // Set up photo-overlay mode if we have table corners
+    if (this.tableCorners && this.detector.inverseMatrix) {
+      this.renderer.setPhotoMode(
+        this.detector,
+        this.tableCorners,
+        this._captureImageData.width,
+        this._captureImageData.height
+      );
+    } else {
+      this.renderer.clearPhotoMode();
+    }
+
     if (this.balls.length === 0) {
       this._setStatus('No balls detected — try again or use demo');
       this._setState(STATE.READY);
@@ -339,6 +351,7 @@ class App {
     // Show video, hide captured
     this.video.classList.remove('hidden');
     this.capturedCanvas.classList.add('hidden');
+    this.renderer.clearPhotoMode();
 
     this._setState(STATE.VIEWFINDER);
   }
@@ -348,6 +361,7 @@ class App {
     this.video.classList.add('hidden');
     this.capturedCanvas.classList.add('hidden');
     this.captureContainer.classList.add('hidden');
+    this.renderer.clearPhotoMode();
     this.balls = createSyntheticBalls();
     this.selectedCue = null;
     this.selectedTarget = null;

@@ -1,8 +1,10 @@
 /**
  * BankShotAI - Canvas Overlay Renderer
  *
- * Draws table outline, balls (with selection glow/pulse), shot paths with
- * ghost ball, arrowheads, bank bounce indicators, and difficulty coloring.
+ * Two modes:
+ * 1. Photo-overlay mode: draws balls/shots directly on captured photo using
+ *    inverse perspective transform to map table coords → photo pixel coords.
+ * 2. Synthetic mode (demo): draws a green table rectangle with fixed mapping.
  */
 
 import {
@@ -23,11 +25,40 @@ export class Renderer {
   constructor(canvas) {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
+    // Synthetic table mapping (demo mode)
     this.scaleX = 1;
     this.scaleY = 1;
     this.offsetX = 0;
     this.offsetY = 0;
     this._pulsePhase = 0;
+
+    // Photo-overlay mode state
+    this._photoMode = false;
+    this._detector = null;       // BallDetector instance with inverse matrix
+    this._tableCorners = null;   // 4 corners in photo pixel coords [BL, BR, TR, TL]
+    this._photoWidth = 0;        // original photo width
+    this._photoHeight = 0;       // original photo height
+  }
+
+  /**
+   * Enable photo-overlay mode.
+   * @param {object} detector - BallDetector with tableToPhoto/photoToTable methods
+   * @param {number[][]} tableCorners - 4 corners in photo pixel coords
+   * @param {number} photoWidth - original captured photo width
+   * @param {number} photoHeight - original captured photo height
+   */
+  setPhotoMode(detector, tableCorners, photoWidth, photoHeight) {
+    this._photoMode = true;
+    this._detector = detector;
+    this._tableCorners = tableCorners;
+    this._photoWidth = photoWidth;
+    this._photoHeight = photoHeight;
+  }
+
+  clearPhotoMode() {
+    this._photoMode = false;
+    this._detector = null;
+    this._tableCorners = null;
   }
 
   resize(containerWidth, containerHeight) {
@@ -55,14 +86,39 @@ export class Renderer {
     this.offsetY = (containerHeight - drawH) / 2;
   }
 
+  /**
+   * Convert table coords (mm) to canvas pixel coords.
+   * In photo mode, uses inverse perspective transform → photo coords → canvas scaling.
+   * In demo mode, uses fixed linear mapping.
+   */
   toCanvas(tx, ty) {
+    if (this._photoMode && this._detector) {
+      const [photoX, photoY] = this._detector.tableToPhoto(tx, ty);
+      // Scale from photo pixel coords to canvas (screen) coords
+      const canvasX = (photoX / this._photoWidth) * this.canvas.width;
+      const canvasY = (photoY / this._photoHeight) * this.canvas.height;
+      return [canvasX, canvasY];
+    }
+    // Synthetic/demo mode
     return [
       this.offsetX + tx * this.scaleX,
       this.offsetY + (TABLE_LENGTH - ty) * this.scaleY,
     ];
   }
 
+  /**
+   * Convert canvas pixel coords to table coords (mm).
+   * In photo mode, uses forward perspective transform.
+   * In demo mode, uses fixed linear mapping.
+   */
   toTable(cx, cy) {
+    if (this._photoMode && this._detector) {
+      // Scale from canvas to photo pixel coords
+      const photoX = (cx / this.canvas.width) * this._photoWidth;
+      const photoY = (cy / this.canvas.height) * this._photoHeight;
+      return this._detector.photoToTable(photoX, photoY);
+    }
+    // Synthetic/demo mode
     return [
       (cx - this.offsetX) / this.scaleX,
       TABLE_LENGTH - (cy - this.offsetY) / this.scaleY,
@@ -74,8 +130,14 @@ export class Renderer {
     this._pulsePhase = (this._pulsePhase + 0.04) % (Math.PI * 2);
   }
 
-  /** Draw table surface, rails, pockets. */
+  /** Draw table surface, rails, pockets. Only used in demo/synthetic mode. */
   drawTable() {
+    if (this._photoMode) {
+      // In photo mode, draw a subtle table outline over the photo
+      this._drawPhotoTableOutline();
+      return;
+    }
+
     const ctx = this.ctx;
     const [x0, y0] = this.toCanvas(0, 0);
     const [x1, y1] = this.toCanvas(TABLE_WIDTH, TABLE_LENGTH);
@@ -121,17 +183,47 @@ export class Renderer {
     ctx.fill();
   }
 
+  /** Draw a subtle outline of the detected table on the photo. */
+  _drawPhotoTableOutline() {
+    if (!this._tableCorners) return;
+    const ctx = this.ctx;
+
+    // Map table corners to canvas coords
+    const corners = this._tableCorners;
+    const canvasCorners = corners.map(c => {
+      const cx = (c[0] / this._photoWidth) * this.canvas.width;
+      const cy = (c[1] / this._photoHeight) * this.canvas.height;
+      return [cx, cy];
+    });
+
+    ctx.beginPath();
+    ctx.moveTo(canvasCorners[0][0], canvasCorners[0][1]);
+    for (let i = 1; i < 4; i++) {
+      ctx.lineTo(canvasCorners[i][0], canvasCorners[i][1]);
+    }
+    ctx.closePath();
+    ctx.strokeStyle = 'rgba(0, 230, 118, 0.5)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
   /**
    * Draw balls with selection highlighting and pulse effect.
-   * @param {Array} balls
-   * @param {number|null} cueIdx - selected cue ball index
-   * @param {number|null} targetIdx - selected target ball index
-   * @param {string|null} hintType - 'cue'|'target'|null — which type to pulse as hint
    */
   drawBalls(balls, cueIdx = null, targetIdx = null, hintType = null) {
     const ctx = this.ctx;
-    const r = BALL_RADIUS * this.scaleX;
     const pulse = 0.5 + 0.5 * Math.sin(this._pulsePhase);
+
+    // Ball radius in canvas pixels — estimate from two known table points
+    let r;
+    if (this._photoMode) {
+      // Estimate ball radius by mapping a ball-width offset
+      const [cx1] = this.toCanvas(0, TABLE_LENGTH / 2);
+      const [cx2] = this.toCanvas(BALL_DIAMETER, TABLE_LENGTH / 2);
+      r = Math.max(6, Math.abs(cx2 - cx1) / 2);
+    } else {
+      r = BALL_RADIUS * this.scaleX;
+    }
 
     balls.forEach((ball, i) => {
       const [cx, cy] = this.toCanvas(ball.x, ball.y);
@@ -178,7 +270,7 @@ export class Renderer {
         ctx.fill();
       }
 
-      // Cue ball distinct look: thicker bright outline
+      // Cue ball distinct look
       if (ball.color === 'white') {
         ctx.beginPath();
         ctx.arc(cx, cy, r, 0, Math.PI * 2);
@@ -218,7 +310,8 @@ export class Renderer {
   }
 
   /**
-   * Draw pockets as tappable targets (highlighted when user needs to pick one).
+   * Draw pockets as tappable targets.
+   * In photo mode, pocket positions are mapped via inverse perspective to photo coords.
    */
   drawPocketHighlights(activePocket = null) {
     const ctx = this.ctx;
@@ -226,17 +319,16 @@ export class Renderer {
 
     for (const [name, pos] of Object.entries(POCKETS)) {
       const [px, py] = this.toCanvas(pos[0], pos[1]);
-      const r = name.startsWith('side') ? SIDE_POCKET_OPENING * this.scaleX * 0.45 : CORNER_POCKET_OPENING * this.scaleX * 0.45;
+      const r = this._photoMode ? 15 :
+        (name.startsWith('side') ? SIDE_POCKET_OPENING * this.scaleX * 0.45 : CORNER_POCKET_OPENING * this.scaleX * 0.45);
 
       if (activePocket && activePocket === name) {
-        // Active pocket: bright ring
         ctx.beginPath();
         ctx.arc(px, py, r + 4, 0, Math.PI * 2);
         ctx.strokeStyle = '#00e676';
         ctx.lineWidth = 3;
         ctx.stroke();
       } else {
-        // Hint pulse
         ctx.save();
         ctx.globalAlpha = 0.3 + pulse * 0.3;
         ctx.beginPath();
@@ -246,30 +338,38 @@ export class Renderer {
         ctx.stroke();
         ctx.restore();
       }
+
+      // In photo mode, draw a small target crosshair at pocket positions
+      if (this._photoMode) {
+        ctx.save();
+        ctx.globalAlpha = 0.7;
+        ctx.beginPath();
+        ctx.moveTo(px - 8, py); ctx.lineTo(px + 8, py);
+        ctx.moveTo(px, py - 8); ctx.lineTo(px, py + 8);
+        ctx.strokeStyle = activePocket === name ? '#00e676' : '#ffeb3b';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.restore();
+      }
     }
   }
 
   /**
-   * Draw all shot paths for a given pocket.
-   * Shows direct + bank shots, color-coded by difficulty.
-   * Easiest shot = thickest/brightest.
+   * Draw all shot paths.
    */
   drawShots(shots, maxShots = 8) {
     const ctx = this.ctx;
     const toDraw = shots.slice(0, maxShots);
 
-    // Draw from hardest to easiest so easiest is on top
     for (let i = toDraw.length - 1; i >= 0; i--) {
       const shot = toDraw[i];
       const color = DIFF_COLORS[shot.difficulty] || '#fff';
-      // Easiest (index 0) = thickest
       const thickness = i === 0 ? 4 : Math.max(1.5, 3 - i * 0.4);
       const alpha = i === 0 ? 1.0 : Math.max(0.25, 0.7 - i * 0.1);
 
       ctx.save();
       ctx.globalAlpha = alpha;
 
-      // Draw path segments with arrowheads
       for (let s = 0; s < shot.pathSegments.length; s++) {
         const [from, to] = shot.pathSegments[s];
         const [fx, fy] = this.toCanvas(from[0], from[1]);
@@ -280,18 +380,25 @@ export class Renderer {
         ctx.lineTo(tx, ty);
         ctx.strokeStyle = color;
         ctx.lineWidth = s === 0 ? thickness * 0.7 : thickness;
-        if (s === 0) ctx.setLineDash([6, 4]); // cue-to-ghost is dashed
+        if (s === 0) ctx.setLineDash([6, 4]);
         else ctx.setLineDash([]);
         ctx.stroke();
         ctx.setLineDash([]);
 
-        // Arrowhead at midpoint of segment
         this._drawArrowHead(fx, fy, tx, ty, color, thickness);
       }
 
-      // Ghost ball (dotted circle at aim point)
+      // Ghost ball
       const [ax, ay] = this.toCanvas(shot.aimPoint[0], shot.aimPoint[1]);
-      const ballR = BALL_RADIUS * this.scaleX;
+      let ballR;
+      if (this._photoMode) {
+        const [cx1] = this.toCanvas(0, TABLE_LENGTH / 2);
+        const [cx2] = this.toCanvas(BALL_DIAMETER, TABLE_LENGTH / 2);
+        ballR = Math.max(6, Math.abs(cx2 - cx1) / 2);
+      } else {
+        ballR = BALL_RADIUS * this.scaleX;
+      }
+
       ctx.beginPath();
       ctx.arc(ax, ay, ballR, 0, Math.PI * 2);
       ctx.strokeStyle = color;
@@ -300,7 +407,6 @@ export class Renderer {
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // Small crosshair inside ghost ball
       ctx.beginPath();
       ctx.moveTo(ax - 4, ay); ctx.lineTo(ax + 4, ay);
       ctx.moveTo(ax, ay - 4); ctx.lineTo(ax, ay + 4);
@@ -308,13 +414,11 @@ export class Renderer {
       ctx.lineWidth = 1;
       ctx.stroke();
 
-      // Bank points with bounce indicators
       for (const bp of shot.bankPoints) {
         const [bx, by] = this.toCanvas(bp[0], bp[1]);
         this._drawBounceIndicator(bx, by, color);
       }
 
-      // Pocket target dot
       const [px, py] = this.toCanvas(shot.targetPocket[0], shot.targetPocket[1]);
       ctx.beginPath();
       ctx.arc(px, py, i === 0 ? 7 : 5, 0, Math.PI * 2);
@@ -324,7 +428,6 @@ export class Renderer {
       ctx.restore();
     }
 
-    // Difficulty label for best shot
     if (toDraw.length > 0) {
       const best = toDraw[0];
       const color = DIFF_COLORS[best.difficulty];
@@ -332,7 +435,6 @@ export class Renderer {
     }
   }
 
-  /** Draw arrowhead at midpoint of a line segment. */
   _drawArrowHead(fx, fy, tx, ty, color, size) {
     const ctx = this.ctx;
     const mx = (fx + tx) / 2;
@@ -353,12 +455,10 @@ export class Renderer {
     ctx.restore();
   }
 
-  /** Bounce indicator: diamond with inner ring at bank point. */
   _drawBounceIndicator(x, y, color) {
     const ctx = this.ctx;
     const s = 10;
 
-    // Outer diamond
     ctx.beginPath();
     ctx.moveTo(x, y - s);
     ctx.lineTo(x + s * 0.6, y);
@@ -371,21 +471,19 @@ export class Renderer {
     ctx.lineWidth = 1;
     ctx.stroke();
 
-    // Inner ring
     ctx.beginPath();
     ctx.arc(x, y, s * 0.3, 0, Math.PI * 2);
     ctx.fillStyle = '#fff';
     ctx.fill();
   }
 
-  /** Small badge showing difficulty level. */
   _drawDifficultyBadge(difficulty, color) {
     const ctx = this.ctx;
     const labels = { easy: 'EASY', medium: 'MEDIUM', hard: 'HARD', very_hard: 'VERY HARD' };
     const label = labels[difficulty] || difficulty;
 
     const x = this.canvas.width / 2;
-    const y = this.offsetY + (TABLE_LENGTH) * this.scaleY + 30;
+    const y = this.canvas.height - 20;
 
     ctx.save();
     ctx.font = 'bold 12px sans-serif';
@@ -404,10 +502,6 @@ export class Renderer {
     ctx.restore();
   }
 
-  /**
-   * Draw detected table outline on camera feed (during SCANNING).
-   * @param {number[][]} corners - 4 corner points in canvas pixel coords
-   */
   drawTableOutline(corners) {
     if (!corners || corners.length !== 4) return;
     const ctx = this.ctx;
@@ -422,7 +516,6 @@ export class Renderer {
     ctx.lineWidth = 3;
     ctx.stroke();
 
-    // Corner dots
     for (const c of corners) {
       ctx.beginPath();
       ctx.arc(c[0], c[1], 6, 0, Math.PI * 2);
@@ -431,45 +524,36 @@ export class Renderer {
     }
   }
 
-  /**
-   * Draw scanning overlay message.
-   */
   drawScanningOverlay() {
     const ctx = this.ctx;
     const cx = this.canvas.width / 2;
     const cy = this.canvas.height / 2;
 
-    // Semi-transparent vignette
     ctx.save();
     ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
-    // Scanning brackets
     const size = Math.min(this.canvas.width, this.canvas.height) * 0.35;
     ctx.strokeStyle = '#00e676';
     ctx.lineWidth = 3;
     const half = size / 2;
     const arm = size * 0.2;
 
-    // Top-left bracket
     ctx.beginPath();
     ctx.moveTo(cx - half, cy - half + arm);
     ctx.lineTo(cx - half, cy - half);
     ctx.lineTo(cx - half + arm, cy - half);
     ctx.stroke();
-    // Top-right
     ctx.beginPath();
     ctx.moveTo(cx + half - arm, cy - half);
     ctx.lineTo(cx + half, cy - half);
     ctx.lineTo(cx + half, cy - half + arm);
     ctx.stroke();
-    // Bottom-right
     ctx.beginPath();
     ctx.moveTo(cx + half, cy + half - arm);
     ctx.lineTo(cx + half, cy + half);
     ctx.lineTo(cx + half - arm, cy + half);
     ctx.stroke();
-    // Bottom-left
     ctx.beginPath();
     ctx.moveTo(cx - half + arm, cy + half);
     ctx.lineTo(cx - half, cy + half);
