@@ -183,28 +183,51 @@ export class Renderer {
     ctx.fill();
   }
 
-  /** Draw a subtle outline of the detected table on the photo. */
+  /** Draw the inner cushion/bumper edges on the photo — where bank shots bounce. */
   _drawPhotoTableOutline() {
     if (!this._tableCorners) return;
     const ctx = this.ctx;
 
-    // Map table corners to canvas coords
-    const corners = this._tableCorners;
-    const canvasCorners = corners.map(c => {
-      const cx = (c[0] / this._photoWidth) * this.canvas.width;
-      const cy = (c[1] / this._photoHeight) * this.canvas.height;
-      return [cx, cy];
-    });
+    // Map the 4 table corners (BL, BR, TR, TL) to canvas coords
+    const corners = this._tableCorners.map(c => [
+      (c[0] / this._photoWidth) * this.canvas.width,
+      (c[1] / this._photoHeight) * this.canvas.height,
+    ]);
 
+    // Draw the inner cushion line — bright yellow/green
     ctx.beginPath();
-    ctx.moveTo(canvasCorners[0][0], canvasCorners[0][1]);
-    for (let i = 1; i < 4; i++) {
-      ctx.lineTo(canvasCorners[i][0], canvasCorners[i][1]);
-    }
+    ctx.moveTo(corners[0][0], corners[0][1]);
+    ctx.lineTo(corners[1][0], corners[1][1]);
+    ctx.lineTo(corners[2][0], corners[2][1]);
+    ctx.lineTo(corners[3][0], corners[3][1]);
     ctx.closePath();
-    ctx.strokeStyle = 'rgba(0, 230, 118, 0.5)';
-    ctx.lineWidth = 2;
+
+    // Glow effect
+    ctx.save();
+    ctx.shadowColor = '#00e676';
+    ctx.shadowBlur = 8;
+    ctx.strokeStyle = '#00e676';
+    ctx.lineWidth = 3;
     ctx.stroke();
+    ctx.restore();
+
+    // Corner dots at pocket positions
+    for (const c of corners) {
+      ctx.beginPath();
+      ctx.arc(c[0], c[1], 5, 0, Math.PI * 2);
+      ctx.fillStyle = '#00e676';
+      ctx.fill();
+    }
+
+    // Side pocket midpoints
+    const midLeft = [(corners[0][0] + corners[3][0]) / 2, (corners[0][1] + corners[3][1]) / 2];
+    const midRight = [(corners[1][0] + corners[2][0]) / 2, (corners[1][1] + corners[2][1]) / 2];
+    for (const mp of [midLeft, midRight]) {
+      ctx.beginPath();
+      ctx.arc(mp[0], mp[1], 5, 0, Math.PI * 2);
+      ctx.fillStyle = '#00e676';
+      ctx.fill();
+    }
   }
 
   /**
