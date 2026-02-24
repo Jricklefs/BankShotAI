@@ -5,11 +5,11 @@
  * User takes a photo, then taps cue ball → target ball → pocket.
  */
 
-import { Camera } from './camera.js?v=1771960485';
-import { BallDetector, loadOpenCV, isOpenCVReady, detectTable } from './detection.js?v=1771960485';
-import { Renderer } from './renderer.js?v=1771960485';
-import { BankShotCalculator } from './physics.js?v=1771960485';
-import { createSyntheticBalls, TABLE_WIDTH, TABLE_LENGTH, BALL_DIAMETER, POCKETS } from './table-config.js?v=1771960485';
+import { Camera } from './camera.js?v=1771960650';
+import { BallDetector, loadOpenCV, isOpenCVReady, detectTable } from './detection.js?v=1771960650';
+import { Renderer } from './renderer.js?v=1771960650';
+import { BankShotCalculator } from './physics.js?v=1771960650';
+import { createSyntheticBalls, TABLE_WIDTH, TABLE_LENGTH, BALL_DIAMETER, POCKETS } from './table-config.js?v=1771960650';
 
 const STATE = {
   LOADING:         'loading',
@@ -183,13 +183,17 @@ class App {
       this.balls = [];
     }
 
-    // Set up photo-overlay mode
+    // Set up photo-overlay mode with letterbox coords
     if (this.detector.inverseMatrix) {
       this.renderer.setPhotoMode(
         this.detector,
         this.tableCorners,
         this._captureImageData.width,
-        this._captureImageData.height
+        this._captureImageData.height,
+        this._photoDrawX || 0,
+        this._photoDrawY || 0,
+        this._photoDrawW || this.overlay.width,
+        this._photoDrawH || this.overlay.height
       );
     }
 
@@ -375,19 +379,43 @@ class App {
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
-      // Set captured canvas to match image dimensions for proper aspect ratio
-      this.capturedCanvas.width = img.width;
-      this.capturedCanvas.height = img.height;
+      // Get ImageData at full image resolution for detection
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = img.width;
+      tempCanvas.height = img.height;
+      const tctx = tempCanvas.getContext('2d');
+      tctx.drawImage(img, 0, 0);
+      this._captureImageData = tctx.getImageData(0, 0, img.width, img.height);
+
+      // Draw image scaled to fit the screen canvas (letterboxed)
+      const cw = this.capturedCanvas.width;
+      const ch = this.capturedCanvas.height;
       const cctx = this.capturedCanvas.getContext('2d');
-      cctx.drawImage(img, 0, 0);
+      cctx.fillStyle = '#000';
+      cctx.fillRect(0, 0, cw, ch);
 
-      // Also resize overlay to match
-      this.overlay.width = img.width;
-      this.overlay.height = img.height;
-      this.renderer.resize(img.width, img.height);
+      // Fit image into canvas maintaining aspect ratio
+      const imgAspect = img.width / img.height;
+      const canvasAspect = cw / ch;
+      let drawW, drawH, drawX, drawY;
+      if (imgAspect > canvasAspect) {
+        drawW = cw;
+        drawH = cw / imgAspect;
+        drawX = 0;
+        drawY = (ch - drawH) / 2;
+      } else {
+        drawH = ch;
+        drawW = ch * imgAspect;
+        drawX = (cw - drawW) / 2;
+        drawY = 0;
+      }
+      cctx.drawImage(img, 0, 0, img.width, img.height, drawX, drawY, drawW, drawH);
 
-      // Get ImageData for detection
-      this._captureImageData = cctx.getImageData(0, 0, img.width, img.height);
+      // Store the draw transform so renderer can map photo coords to screen
+      this._photoDrawX = drawX;
+      this._photoDrawY = drawY;
+      this._photoDrawW = drawW;
+      this._photoDrawH = drawH;
 
       this.capturedCanvas.classList.remove('hidden');
 

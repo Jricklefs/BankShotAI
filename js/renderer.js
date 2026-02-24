@@ -11,8 +11,8 @@ import {
   TABLE_WIDTH, TABLE_LENGTH, BALL_RADIUS, BALL_DIAMETER,
   POCKETS, CORNER_POCKET_OPENING, SIDE_POCKET_OPENING,
   BALL_COLORS
-} from './table-config.js?v=1771960485';
-import { DIFFICULTY } from './physics.js?v=1771960485';
+} from './table-config.js?v=1771960650';
+import { DIFFICULTY } from './physics.js?v=1771960650';
 
 const DIFF_COLORS = {
   [DIFFICULTY.EASY]:      '#00e676',
@@ -47,12 +47,17 @@ export class Renderer {
    * @param {number} photoWidth - original captured photo width
    * @param {number} photoHeight - original captured photo height
    */
-  setPhotoMode(detector, tableCorners, photoWidth, photoHeight) {
+  setPhotoMode(detector, tableCorners, photoWidth, photoHeight, drawX, drawY, drawW, drawH) {
     this._photoMode = true;
     this._detector = detector;
     this._tableCorners = tableCorners;
     this._photoWidth = photoWidth;
     this._photoHeight = photoHeight;
+    // Where the photo is drawn on the canvas (letterboxed)
+    this._drawX = drawX || 0;
+    this._drawY = drawY || 0;
+    this._drawW = drawW || this.canvas.width;
+    this._drawH = drawH || this.canvas.height;
   }
 
   clearPhotoMode() {
@@ -94,9 +99,9 @@ export class Renderer {
   toCanvas(tx, ty) {
     if (this._photoMode && this._detector) {
       const [photoX, photoY] = this._detector.tableToPhoto(tx, ty);
-      // Scale from photo pixel coords to canvas (screen) coords
-      const canvasX = (photoX / this._photoWidth) * this.canvas.width;
-      const canvasY = (photoY / this._photoHeight) * this.canvas.height;
+      // Scale from photo pixel coords to canvas coords (accounting for letterboxing)
+      const canvasX = this._drawX + (photoX / this._photoWidth) * this._drawW;
+      const canvasY = this._drawY + (photoY / this._photoHeight) * this._drawH;
       return [canvasX, canvasY];
     }
     // Synthetic/demo mode
@@ -113,9 +118,9 @@ export class Renderer {
    */
   toTable(cx, cy) {
     if (this._photoMode && this._detector) {
-      // Scale from canvas to photo pixel coords
-      const photoX = (cx / this.canvas.width) * this._photoWidth;
-      const photoY = (cy / this.canvas.height) * this._photoHeight;
+      // Scale from canvas to photo pixel coords (accounting for letterboxing)
+      const photoX = ((cx - this._drawX) / this._drawW) * this._photoWidth;
+      const photoY = ((cy - this._drawY) / this._drawH) * this._photoHeight;
       return this._detector.photoToTable(photoX, photoY);
     }
     // Synthetic/demo mode
@@ -190,8 +195,8 @@ export class Renderer {
 
     // Map the 4 table corners (BL, BR, TR, TL) to canvas coords
     const corners = this._tableCorners.map(c => [
-      (c[0] / this._photoWidth) * this.canvas.width,
-      (c[1] / this._photoHeight) * this.canvas.height,
+      this._drawX + (c[0] / this._photoWidth) * this._drawW,
+      this._drawY + (c[1] / this._photoHeight) * this._drawH,
     ]);
 
     // Draw the inner cushion line — bright yellow/green
