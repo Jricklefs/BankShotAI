@@ -166,8 +166,8 @@ export function detectTable(imageData) {
     const confidence = Math.min(1, (bestArea / totalArea) / 0.3);
 
     // Shrink quadrilateral inward so corners land inside pockets
-    // The felt contour is at the outer rail edge; bumper cushions are ~5% inward
-    const inset = _insetQuad(bestQuad, 0.05);
+    // The felt contour is at the outer rail edge; bumper cushion nose is significantly inward
+    const inset = _insetQuad(bestQuad, 0.14);
     console.log(`[detectTable] Inset corners:`, inset);
 
     return { corners: inset, confidence };
