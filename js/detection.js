@@ -187,18 +187,35 @@ function _quadAspect(corners) {
 }
 
 function _orderCorners(pts) {
-  // Order by sum (x+y) and difference (y-x)
-  const sorted = [...pts];
-  // TL = min sum, BR = max sum, TR = min (y-x), BL = max (y-x)
-  sorted.sort((a, b) => (a[0] + a[1]) - (b[0] + b[1]));
-  const tl = sorted[0];
-  const br = sorted[3];
-  // Of the middle two, TR has smaller y (or larger x)
-  const mid = [sorted[1], sorted[2]];
-  mid.sort((a, b) => a[1] - b[1]);  // sort by y ascending
-  const tr = mid[0];
-  const bl = mid[1];
+  // Sort corners clockwise from centroid, then assign BL/BR/TR/TL
+  // based on the table being a landscape rectangle (wider than tall in real life)
+  const cx = pts.reduce((s, p) => s + p[0], 0) / 4;
+  const cy = pts.reduce((s, p) => s + p[1], 0) / 4;
+  
+  // Sort by angle from centroid (clockwise from top = -PI/2)
+  const withAngle = pts.map(p => ({
+    pt: p,
+    angle: Math.atan2(p[1] - cy, p[0] - cx)
+  }));
+  withAngle.sort((a, b) => a.angle - b.angle);
+  // Now sorted counter-clockwise from right (angle -PI to PI)
+  // Rearrange: we have 4 points in CCW order starting from ~rightmost
+  
+  // Split into top two (lower y) and bottom two (higher y)
+  const byY = [...pts].sort((a, b) => a[1] - b[1]);
+  const topTwo = byY.slice(0, 2);   // smaller y = higher in image
+  const botTwo = byY.slice(2, 4);   // larger y = lower in image
+  
+  // Within each pair, sort by x
+  topTwo.sort((a, b) => a[0] - b[0]);
+  botTwo.sort((a, b) => a[0] - b[0]);
+  
+  const tl = topTwo[0];
+  const tr = topTwo[1];
+  const bl = botTwo[0];
+  const br = botTwo[1];
 
+  console.log(`[_orderCorners] TL=${tl}, TR=${tr}, BL=${bl}, BR=${br}`);
   return [bl, br, tr, tl]; // BL, BR, TR, TL
 }
 
