@@ -5,11 +5,11 @@
  * User takes a photo, then taps cue ball → target ball → pocket.
  */
 
-import { Camera } from './camera.js?v=1771952648';
-import { BallDetector, loadOpenCV, isOpenCVReady, detectTable } from './detection.js?v=1771952648';
-import { Renderer } from './renderer.js?v=1771952648';
-import { BankShotCalculator } from './physics.js?v=1771952648';
-import { createSyntheticBalls, TABLE_WIDTH, TABLE_LENGTH, BALL_DIAMETER, POCKETS } from './table-config.js?v=1771952648';
+import { Camera } from './camera.js?v=1771953752';
+import { BallDetector, loadOpenCV, isOpenCVReady, detectTable } from './detection.js?v=1771953752';
+import { Renderer } from './renderer.js?v=1771953752';
+import { BankShotCalculator } from './physics.js?v=1771953752';
+import { createSyntheticBalls, TABLE_WIDTH, TABLE_LENGTH, BALL_DIAMETER, POCKETS } from './table-config.js?v=1771953752';
 
 const STATE = {
   LOADING:         'loading',
@@ -154,38 +154,47 @@ class App {
       return;
     }
 
-    // Detect table
-    const tableResult = detectTable(this._captureImageData);
-    if (tableResult && tableResult.confidence > 0.2) {
-      this.tableCorners = tableResult.corners;
-    } else {
-      this.tableCorners = null;
+    // Detect table — MUST succeed before we look for balls
+    let tableResult = null;
+    try {
+      tableResult = detectTable(this._captureImageData);
+      console.log('[App] Table detection:', tableResult);
+    } catch (e) {
+      console.error('[App] Table detection error:', e);
     }
 
-    // Detect balls
+    if (!tableResult || tableResult.confidence < 0.15) {
+      this.tableCorners = null;
+      this.balls = [];
+      this.renderer.clearPhotoMode();
+      this._setStatus('Could not detect table — try a different angle');
+      this._setState(STATE.READY);
+      return;
+    }
+
+    this.tableCorners = tableResult.corners;
+
+    // Detect balls ONLY within the warped table region
     try {
       this.balls = this.detector.detect(this._captureImageData, this.tableCorners);
+      console.log(`[App] Detected ${this.balls.length} balls`);
     } catch (e) {
-      console.error('Ball detection failed:', e);
+      console.error('[App] Ball detection failed:', e);
       this.balls = [];
     }
 
-    // Set up photo-overlay mode if we have table corners
-    if (this.tableCorners && this.detector.inverseMatrix) {
+    // Set up photo-overlay mode
+    if (this.detector.inverseMatrix) {
       this.renderer.setPhotoMode(
         this.detector,
         this.tableCorners,
         this._captureImageData.width,
         this._captureImageData.height
       );
-    } else {
-      this.renderer.clearPhotoMode();
     }
 
     if (this.balls.length === 0) {
-      this._setStatus('No balls detected — try again or use demo');
-      this._setState(STATE.READY);
-      return;
+      this._setStatus('Table found but no balls detected — try better lighting');
     }
 
     this.selectedCue = null;

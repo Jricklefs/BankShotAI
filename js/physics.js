@@ -9,7 +9,7 @@
 import {
   TABLE_WIDTH, TABLE_LENGTH, BALL_RADIUS,
   POCKETS, RAIL_LEFT, RAIL_RIGHT, RAIL_BOTTOM, RAIL_TOP
-} from './table-config.js?v=1771952648';
+} from './table-config.js?v=1771953752';
 
 const RAIL = { LEFT: 'left', RIGHT: 'right', BOTTOM: 'bottom', TOP: 'top' };
 const ALL_RAILS = [RAIL.LEFT, RAIL.RIGHT, RAIL.BOTTOM, RAIL.TOP];
