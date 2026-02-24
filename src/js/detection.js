@@ -8,7 +8,7 @@
 import {
   BALL_COLORS, BALL_DIAMETER, BALL_RADIUS,
   TABLE_WIDTH, TABLE_LENGTH
-} from './table-config.js?v=1771964899';
+} from './table-config.js?v=1771964972';
 
 const TABLE_ASPECT = TABLE_LENGTH / TABLE_WIDTH; // ~2.0
 const ASPECT_TOLERANCE = 0.6;
@@ -165,15 +165,16 @@ export function detectTable(imageData) {
     console.log(`[detectTable] Found table: ${(bestArea/totalArea*100).toFixed(1)}% of frame, corners:`, bestQuad);
     const confidence = Math.min(1, (bestArea / totalArea) / 0.3);
 
-    // Detect actual bumper edges by warping to rectangle and finding cushion lines
-    const bumperCorners = _detectBumperEdges(bgr, bestQuad, cleanup, mat);
-    if (bumperCorners) {
-      console.log(`[detectTable] Bumper corners:`, bumperCorners);
-      return { corners: bumperCorners, confidence };
+    // Find the 4 corner pockets — dark holes near the felt quad corners
+    // The bumper rectangle corners sit inside the pockets
+    const pocketCorners = _findPocketCorners(bgr, bestQuad, cleanup, mat);
+    if (pocketCorners) {
+      console.log(`[detectTable] Pocket corners:`, pocketCorners);
+      return { corners: pocketCorners, confidence };
     }
 
     // Fallback: use felt quad as-is
-    console.log(`[detectTable] Bumper detection failed, using felt quad`);
+    console.log(`[detectTable] Pocket detection failed, using felt quad`);
     return { corners: bestQuad, confidence };
   } catch (e) {
     console.error('Table detection error:', e);
@@ -230,142 +231,76 @@ function _orderCorners(pts) {
 }
 
 /**
- * Detect the actual bumper/cushion edges inside the felt region.
- * Warp to rectangle → grayscale → Canny → scan inward from each edge
- * to find the first strong edge line (cushion nose).
- * Returns 4 corners in original photo space [BL, BR, TR, TL].
+ * Find the 4 corner pockets of the pool table.
+ * Pockets are dark circular holes near the corners of the felt quad.
+ * The center of each pocket IS the corner of the bumper rectangle
+ * (where the two cushion lines would intersect).
+ * Returns [BL, BR, TR, TL] in photo pixel coords.
  */
-function _detectBumperEdges(bgr, feltQuad, cleanup, mat) {
+function _findPocketCorners(bgr, feltQuad, cleanup, mat) {
   try {
-    // Warp felt quad to a rectangle
-    const dstW = 800;
-    const dstH = 400;  // TABLE_LENGTH:TABLE_WIDTH ≈ 2:1, but W > H in warped space
-    // feltQuad = [BL, BR, TR, TL]
-    const srcPts = mat(cv.matFromArray(4, 1, cv.CV_32FC2, feltQuad.flat()));
-    const dstPts = mat(cv.matFromArray(4, 1, cv.CV_32FC2, [
-      0, dstH,      // BL
-      dstW, dstH,   // BR
-      dstW, 0,      // TR
-      0, 0,         // TL
-    ]));
-
-    const M = mat(cv.getPerspectiveTransform(srcPts, dstPts));
-    const Minv = mat(cv.getPerspectiveTransform(dstPts, srcPts));
-    const warped = mat(new cv.Mat());
-    cv.warpPerspective(bgr, warped, M, new cv.Size(dstW, dstH));
-
-    // Convert to grayscale for intensity scanning
     const gray = mat(new cv.Mat());
-    cv.cvtColor(warped, gray, cv.COLOR_BGR2GRAY);
+    cv.cvtColor(bgr, gray, cv.COLOR_BGR2GRAY);
     const blurred = mat(new cv.Mat());
-    cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+    cv.GaussianBlur(gray, blurred, new cv.Size(9, 9), 0);
 
-    // Scan inward from each edge: find where intensity jumps from dark (rail/rubber) to bright (felt)
-    // This transition is exactly the cushion nose
-    const topY = _findBrightnessEdge(blurred, 'top', dstW, dstH);
-    const botY = _findBrightnessEdge(blurred, 'bottom', dstW, dstH);
-    const leftX = _findBrightnessEdge(blurred, 'left', dstW, dstH);
-    const rightX = _findBrightnessEdge(blurred, 'right', dstW, dstH);
-
-    console.log(`[_detectBumperEdges] top=${topY}, bottom=${botY}, left=${leftX}, right=${rightX}`);
-
-    if (topY === null || botY === null || leftX === null || rightX === null) {
-      return null;
-    }
-
-    // Build bumper corners in warped space [BL, BR, TR, TL]
-    const bumperWarped = [
-      [leftX, botY],   // BL
-      [rightX, botY],  // BR
-      [rightX, topY],  // TR
-      [leftX, topY],   // TL
-    ];
-
-    // Unwarp back to photo space using inverse transform
-    const warpedPts = mat(cv.matFromArray(4, 1, cv.CV_32FC2, bumperWarped.flat()));
-    const photoPts = mat(new cv.Mat());
-    cv.perspectiveTransform(warpedPts, photoPts, Minv);
-
+    // For each felt quad corner, search a region around it for the darkest blob
+    // feltQuad = [BL, BR, TR, TL]
     const result = [];
+    const labels = ['BL', 'BR', 'TR', 'TL'];
+    const imgW = bgr.cols, imgH = bgr.rows;
+
+    // Search radius as fraction of image diagonal
+    const diag = Math.hypot(imgW, imgH);
+    const searchR = Math.round(diag * 0.06); // ~6% of diagonal
+
     for (let i = 0; i < 4; i++) {
-      result.push([photoPts.data32F[i * 2], photoPts.data32F[i * 2 + 1]]);
+      const [cx, cy] = feltQuad[i];
+      
+      // Define search ROI clamped to image bounds
+      const x0 = Math.max(0, Math.round(cx - searchR));
+      const y0 = Math.max(0, Math.round(cy - searchR));
+      const x1 = Math.min(imgW, Math.round(cx + searchR));
+      const y1 = Math.min(imgH, Math.round(cy + searchR));
+      const roiW = x1 - x0, roiH = y1 - y0;
+      if (roiW < 10 || roiH < 10) { result.push(feltQuad[i]); continue; }
+
+      const roi = blurred.roi(new cv.Rect(x0, y0, roiW, roiH));
+
+      // Threshold to find dark regions (pockets are very dark)
+      const thresh = mat(new cv.Mat());
+      cv.threshold(roi, thresh, 60, 255, cv.THRESH_BINARY_INV);
+      roi.delete();
+
+      // Find contours in the dark region
+      const contours = mat(new cv.MatVector());
+      const hier = mat(new cv.Mat());
+      cv.findContours(thresh, contours, hier, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+      // Find the largest dark blob — that's the pocket
+      let bestArea = 0, bestCx = cx, bestCy = cy;
+      for (let j = 0; j < contours.size(); j++) {
+        const cnt = contours.get(j);
+        const area = cv.contourArea(cnt);
+        if (area > bestArea) {
+          const moments = cv.moments(cnt);
+          if (moments.m00 > 0) {
+            bestArea = area;
+            bestCx = x0 + moments.m10 / moments.m00;
+            bestCy = y0 + moments.m01 / moments.m00;
+          }
+        }
+      }
+
+      console.log(`[_findPocketCorners] ${labels[i]}: felt=(${cx.toFixed(0)},${cy.toFixed(0)}) → pocket=(${bestCx.toFixed(0)},${bestCy.toFixed(0)}), area=${bestArea.toFixed(0)}`);
+      result.push([bestCx, bestCy]);
     }
+
     return result;
   } catch (e) {
-    console.error('[_detectBumperEdges] Error:', e);
+    console.error('[_findPocketCorners] Error:', e);
     return null;
   }
-}
-
-/**
- * Scan from one edge inward looking for the dark→bright intensity transition.
- * The cushion nose is where the dark rail/rubber transitions to bright felt.
- * Returns the coordinate (X or Y) of the bumper edge.
- */
-function _findBrightnessEdge(gray, side, w, h) {
-  const data = gray.data;  // uint8 grayscale
-  const scanRange = 0.25;  // scan up to 25% inward
-
-  // Compute average intensity along a line (middle 60% to avoid pockets)
-  function avgIntensity(pos, isHorizontal) {
-    let sum = 0, count = 0;
-    if (isHorizontal) {
-      const x0 = Math.round(w * 0.2), x1 = Math.round(w * 0.8);
-      for (let x = x0; x < x1; x++) {
-        sum += data[pos * w + x];
-        count++;
-      }
-    } else {
-      const y0 = Math.round(h * 0.2), y1 = Math.round(h * 0.8);
-      for (let y = y0; y < y1; y++) {
-        sum += data[y * w + pos];
-        count++;
-      }
-    }
-    return sum / count;
-  }
-
-  // Find the biggest intensity jump (gradient) scanning inward
-  let bestGrad = 0;
-  let bestPos = null;
-  const kernel = 3; // compare average of 3 lines
-
-  if (side === 'top') {
-    const maxY = Math.round(h * scanRange);
-    for (let y = 2; y < maxY - kernel; y++) {
-      const before = avgIntensity(y - 1, true);
-      const after = avgIntensity(y + kernel, true);
-      const grad = after - before;  // bright felt is higher intensity
-      if (grad > bestGrad) { bestGrad = grad; bestPos = y; }
-    }
-  } else if (side === 'bottom') {
-    const minY = Math.round(h * (1 - scanRange));
-    for (let y = h - 3; y > minY + kernel; y--) {
-      const before = avgIntensity(y + 1, true);
-      const after = avgIntensity(y - kernel, true);
-      const grad = after - before;
-      if (grad > bestGrad) { bestGrad = grad; bestPos = y; }
-    }
-  } else if (side === 'left') {
-    const maxX = Math.round(w * scanRange);
-    for (let x = 2; x < maxX - kernel; x++) {
-      const before = avgIntensity(x - 1, false);
-      const after = avgIntensity(x + kernel, false);
-      const grad = after - before;
-      if (grad > bestGrad) { bestGrad = grad; bestPos = x; }
-    }
-  } else if (side === 'right') {
-    const minX = Math.round(w * (1 - scanRange));
-    for (let x = w - 3; x > minX + kernel; x--) {
-      const before = avgIntensity(x + 1, false);
-      const after = avgIntensity(x - kernel, false);
-      const grad = after - before;
-      if (grad > bestGrad) { bestGrad = grad; bestPos = x; }
-    }
-  }
-
-  console.log(`[_findBrightnessEdge] ${side}: bestPos=${bestPos}, gradient=${bestGrad.toFixed(1)}`);
-  return bestGrad > 5 ? bestPos : null;  // minimum 5 intensity units jump
 }
 
 /**
