@@ -5,11 +5,11 @@
  * User takes a photo, then taps cue ball → target ball → pocket.
  */
 
-import { Camera } from './camera.js?v=1771963460';
-import { BallDetector, loadOpenCV, isOpenCVReady, detectTable } from './detection.js?v=1771963460';
-import { Renderer } from './renderer.js?v=1771963460';
-import { BankShotCalculator } from './physics.js?v=1771963460';
-import { createSyntheticBalls, TABLE_WIDTH, TABLE_LENGTH, BALL_DIAMETER, POCKETS } from './table-config.js?v=1771963460';
+import { Camera } from './camera.js?v=1771963515';
+import { BallDetector, loadOpenCV, isOpenCVReady, detectTable } from './detection.js?v=1771963515';
+import { Renderer } from './renderer.js?v=1771963515';
+import { BankShotCalculator } from './physics.js?v=1771963515';
+import { createSyntheticBalls, TABLE_WIDTH, TABLE_LENGTH, BALL_DIAMETER, POCKETS } from './table-config.js?v=1771963515';
 
 const STATE = {
   LOADING:         'loading',
@@ -124,6 +124,50 @@ class App {
 
 
 
+  _drawBumperOutline() {
+    if (!this.tableCorners) return;
+    const ctx = this.overlay.getContext('2d');
+    
+    // Map table corners from photo pixel coords to overlay canvas coords
+    const corners = this.tableCorners.map(c => [
+      (this._photoDrawX || 0) + (c[0] / this._captureImageData.width) * (this._photoDrawW || this.overlay.width),
+      (this._photoDrawY || 0) + (c[1] / this._captureImageData.height) * (this._photoDrawH || this.overlay.height),
+    ]);
+
+    // Draw bumper outline — bright green with glow
+    ctx.save();
+    ctx.shadowColor = '#00e676';
+    ctx.shadowBlur = 12;
+    ctx.strokeStyle = '#00e676';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(corners[0][0], corners[0][1]);
+    ctx.lineTo(corners[1][0], corners[1][1]);
+    ctx.lineTo(corners[2][0], corners[2][1]);
+    ctx.lineTo(corners[3][0], corners[3][1]);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.restore();
+
+    // Corner dots (pocket positions)
+    for (const c of corners) {
+      ctx.beginPath();
+      ctx.arc(c[0], c[1], 6, 0, Math.PI * 2);
+      ctx.fillStyle = '#00e676';
+      ctx.fill();
+    }
+
+    // Side pocket midpoints
+    const midLeft = [(corners[0][0] + corners[3][0]) / 2, (corners[0][1] + corners[3][1]) / 2];
+    const midRight = [(corners[1][0] + corners[2][0]) / 2, (corners[1][1] + corners[2][1]) / 2];
+    for (const mp of [midLeft, midRight]) {
+      ctx.beginPath();
+      ctx.arc(mp[0], mp[1], 6, 0, Math.PI * 2);
+      ctx.fillStyle = '#00e676';
+      ctx.fill();
+    }
+  }
+
   // --- Photo capture ---
 
   _capturePhoto() {
@@ -199,33 +243,10 @@ class App {
     }
 
     this.tableCorners = tableResult.corners;
+    this.balls = [];
 
-    // Detect balls ONLY within the warped table region
-    try {
-      this.balls = this.detector.detect(this._captureImageData, this.tableCorners);
-      console.log(`[App] Detected ${this.balls.length} balls`);
-    } catch (e) {
-      console.error('[App] Ball detection failed:', e);
-      this.balls = [];
-    }
-
-    // Set up photo-overlay mode with letterbox coords
-    if (this.detector.inverseMatrix) {
-      this.renderer.setPhotoMode(
-        this.detector,
-        this.tableCorners,
-        this._captureImageData.width,
-        this._captureImageData.height,
-        this._photoDrawX || 0,
-        this._photoDrawY || 0,
-        this._photoDrawW || this.overlay.width,
-        this._photoDrawH || this.overlay.height
-      );
-    }
-
-    if (this.balls.length === 0) {
-      this._setStatus('Table found but no balls detected — try better lighting');
-    }
+    // For now, just show the table outline — no ball detection yet
+    console.log('[App] Table corners (BL,BR,TR,TL):', this.tableCorners);
 
     this.selectedCue = null;
     this.selectedTarget = null;
@@ -310,9 +331,9 @@ class App {
       [STATE.LOADING]:         'Loading...',
       [STATE.VIEWFINDER]:      'Point at table and tap 📸',
       [STATE.PROCESSING]:      'Detecting table & balls...',
-      [STATE.READY]:           this.balls.length > 0
-                                 ? `${this.balls.length} balls found — Tap the cue ball`
-                                 : 'No balls detected — Retake or Demo',
+      [STATE.READY]:           this.tableCorners
+                                 ? 'Table detected — bumper outline shown'
+                                 : 'No table detected — Retake or Demo',
       [STATE.CUE_SELECTED]:    'Now tap the target ball',
       [STATE.TARGET_SELECTED]: 'Tap a pocket',
       [STATE.SHOWING_SHOT]:    `${this.shots.length} shot${this.shots.length !== 1 ? 's' : ''} found`,
@@ -485,8 +506,11 @@ class App {
         break;
 
       case STATE.READY:
-        this.renderer.drawTable();
-        this.renderer.drawBalls(this.balls, null, null, 'cue');
+        if (this.tableCorners) {
+          this._drawBumperOutline();
+        } else {
+          this.renderer.drawTable();
+        }
         break;
 
       case STATE.CUE_SELECTED:
