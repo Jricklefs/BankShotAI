@@ -5,11 +5,11 @@
  * User takes a photo, then taps cue ball → target ball → pocket.
  */
 
-import { Camera } from './camera.js?v=1771959798';
-import { BallDetector, loadOpenCV, isOpenCVReady, detectTable } from './detection.js?v=1771959798';
-import { Renderer } from './renderer.js?v=1771959798';
-import { BankShotCalculator } from './physics.js?v=1771959798';
-import { createSyntheticBalls, TABLE_WIDTH, TABLE_LENGTH, BALL_DIAMETER, POCKETS } from './table-config.js?v=1771959798';
+import { Camera } from './camera.js?v=1771960485';
+import { BallDetector, loadOpenCV, isOpenCVReady, detectTable } from './detection.js?v=1771960485';
+import { Renderer } from './renderer.js?v=1771960485';
+import { BankShotCalculator } from './physics.js?v=1771960485';
+import { createSyntheticBalls, TABLE_WIDTH, TABLE_LENGTH, BALL_DIAMETER, POCKETS } from './table-config.js?v=1771960485';
 
 const STATE = {
   LOADING:         'loading',
@@ -375,21 +375,20 @@ class App {
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
-      // Draw to captured canvas
+      // Set captured canvas to match image dimensions for proper aspect ratio
+      this.capturedCanvas.width = img.width;
+      this.capturedCanvas.height = img.height;
       const cctx = this.capturedCanvas.getContext('2d');
-      const cw = this.capturedCanvas.width;
-      const ch = this.capturedCanvas.height;
+      cctx.drawImage(img, 0, 0);
 
-      // Also get ImageData at full resolution for detection
-      const tempCanvas = document.createElement('canvas');
-      tempCanvas.width = img.width;
-      tempCanvas.height = img.height;
-      const tctx = tempCanvas.getContext('2d');
-      tctx.drawImage(img, 0, 0);
-      this._captureImageData = tctx.getImageData(0, 0, img.width, img.height);
+      // Also resize overlay to match
+      this.overlay.width = img.width;
+      this.overlay.height = img.height;
+      this.renderer.resize(img.width, img.height);
 
-      // Show on screen
-      cctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, cw, ch);
+      // Get ImageData for detection
+      this._captureImageData = cctx.getImageData(0, 0, img.width, img.height);
+
       this.capturedCanvas.classList.remove('hidden');
 
       setTimeout(() => this._processCapture(), 50);
