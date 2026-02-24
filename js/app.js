@@ -5,11 +5,11 @@
  * User takes a photo, then taps cue ball → target ball → pocket.
  */
 
-import { Camera } from './camera.js?v=1771960826';
-import { BallDetector, loadOpenCV, isOpenCVReady, detectTable } from './detection.js?v=1771960826';
-import { Renderer } from './renderer.js?v=1771960826';
-import { BankShotCalculator } from './physics.js?v=1771960826';
-import { createSyntheticBalls, TABLE_WIDTH, TABLE_LENGTH, BALL_DIAMETER, POCKETS } from './table-config.js?v=1771960826';
+import { Camera } from './camera.js?v=1771961872';
+import { BallDetector, loadOpenCV, isOpenCVReady, detectTable } from './detection.js?v=1771961872';
+import { Renderer } from './renderer.js?v=1771961872';
+import { BankShotCalculator } from './physics.js?v=1771961872';
+import { createSyntheticBalls, TABLE_WIDTH, TABLE_LENGTH, BALL_DIAMETER, POCKETS } from './table-config.js?v=1771961872';
 
 const STATE = {
   LOADING:         'loading',
@@ -111,10 +111,7 @@ class App {
     const h = window.innerHeight;
     this.overlay.width = w;
     this.overlay.height = h;
-    if (!this._hasCapture) {
-      this.capturedCanvas.width = w;
-      this.capturedCanvas.height = h;
-    }
+    // capturedCanvas is now an <img>, no need to resize
     this.renderer.resize(w, h);
   }
 
@@ -144,19 +141,37 @@ class App {
     ctx.drawImage(this.video, 0, 0, vw, vh);
     this._captureImageData = ctx.getImageData(0, 0, vw, vh);
 
-    // Draw frozen image on captured canvas (scaled to screen)
-    const cctx = this.capturedCanvas.getContext('2d');
-    const cw = this.capturedCanvas.width;
-    const ch = this.capturedCanvas.height;
-    cctx.drawImage(tempCanvas, 0, 0, vw, vh, 0, 0, cw, ch);
+    // Show frozen image as data URL on the <img> element
+    this.capturedCanvas.src = tempCanvas.toDataURL('image/jpeg', 0.9);
+    this._hasCapture = true;
 
-    // Show frozen image, hide video
     this.video.classList.add('hidden');
     this.capturedCanvas.classList.remove('hidden');
     this.captureContainer.classList.add('hidden');
 
-    // Process the captured image
-    setTimeout(() => this._processCapture(), 50);
+    // Wait for img to render, then compute draw rect and process
+    setTimeout(() => {
+      const rect = this.capturedCanvas.getBoundingClientRect();
+      const imgAspect = vw / vh;
+      const containerAspect = rect.width / rect.height;
+      let drawW, drawH, drawX, drawY;
+      if (imgAspect > containerAspect) {
+        drawW = rect.width;
+        drawH = rect.width / imgAspect;
+        drawX = 0;
+        drawY = (rect.height - drawH) / 2;
+      } else {
+        drawH = rect.height;
+        drawW = rect.height * imgAspect;
+        drawX = (rect.width - drawW) / 2;
+        drawY = 0;
+      }
+      this._photoDrawX = drawX;
+      this._photoDrawY = drawY;
+      this._photoDrawW = drawW;
+      this._photoDrawH = drawH;
+      this._processCapture();
+    }, 100);
   }
 
   _processCapture() {
@@ -399,41 +414,38 @@ class App {
       tctx.drawImage(img, 0, 0);
       this._captureImageData = tctx.getImageData(0, 0, img.width, img.height);
 
-      // Draw image scaled to fit the screen canvas (letterboxed)
-      const cw = this.capturedCanvas.width;
-      const ch = this.capturedCanvas.height;
-      const cctx = this.capturedCanvas.getContext('2d');
-      cctx.fillStyle = '#000';
-      cctx.fillRect(0, 0, cw, ch);
-
-      // Fit image into canvas maintaining aspect ratio
-      const imgAspect = img.width / img.height;
-      const canvasAspect = cw / ch;
-      let drawW, drawH, drawX, drawY;
-      if (imgAspect > canvasAspect) {
-        drawW = cw;
-        drawH = cw / imgAspect;
-        drawX = 0;
-        drawY = (ch - drawH) / 2;
-      } else {
-        drawH = ch;
-        drawW = ch * imgAspect;
-        drawX = (cw - drawW) / 2;
-        drawY = 0;
-      }
-      cctx.drawImage(img, 0, 0, img.width, img.height, drawX, drawY, drawW, drawH);
-
-      // Store the draw transform so renderer can map photo coords to screen
-      this._photoDrawX = drawX;
-      this._photoDrawY = drawY;
-      this._photoDrawW = drawW;
-      this._photoDrawH = drawH;
+      // Show the image directly (img element with object-fit: contain handles scaling)
+      this.capturedCanvas.src = 'test_table.jpg';
+      this.capturedCanvas.classList.remove('hidden');
       this._hasCapture = true;
 
-      this.capturedCanvas.classList.remove('hidden');
-      console.log(`[App] Drew image ${img.width}x${img.height} → canvas ${cw}x${ch} at (${drawX.toFixed(0)},${drawY.toFixed(0)}) ${drawW.toFixed(0)}x${drawH.toFixed(0)}`);
+      // Compute where the image renders on screen for overlay mapping
+      // object-fit: contain centers the image, we need to figure out the actual rendered rect
+      // Use a timeout to let the img element render first
+      setTimeout(() => {
+        const rect = this.capturedCanvas.getBoundingClientRect();
+        const imgAspect = img.width / img.height;
+        const containerAspect = rect.width / rect.height;
+        let drawW, drawH, drawX, drawY;
+        if (imgAspect > containerAspect) {
+          drawW = rect.width;
+          drawH = rect.width / imgAspect;
+          drawX = 0;
+          drawY = (rect.height - drawH) / 2;
+        } else {
+          drawH = rect.height;
+          drawW = rect.height * imgAspect;
+          drawX = (rect.width - drawW) / 2;
+          drawY = 0;
+        }
+        this._photoDrawX = drawX;
+        this._photoDrawY = drawY;
+        this._photoDrawW = drawW;
+        this._photoDrawH = drawH;
+        console.log(`[App] Image ${img.width}x${img.height} rendered at (${drawX.toFixed(0)},${drawY.toFixed(0)}) ${drawW.toFixed(0)}x${drawH.toFixed(0)} in ${rect.width.toFixed(0)}x${rect.height.toFixed(0)} container`);
 
-      setTimeout(() => this._processCapture(), 50);
+        this._processCapture();
+      }, 100);
     };
     img.onerror = () => {
       this._setStatus('Failed to load test image');

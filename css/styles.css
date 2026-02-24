@@ -174,7 +174,7 @@ html, body {
   display: none !important;
 }
 
-/* Captured image canvas */
+/* Captured image */
 #captured-image {
   position: absolute;
   top: 0; left: 0;

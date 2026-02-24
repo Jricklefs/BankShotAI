@@ -11,8 +11,8 @@ import {
   TABLE_WIDTH, TABLE_LENGTH, BALL_RADIUS, BALL_DIAMETER,
   POCKETS, CORNER_POCKET_OPENING, SIDE_POCKET_OPENING,
   BALL_COLORS
-} from './table-config.js?v=1771960826';
-import { DIFFICULTY } from './physics.js?v=1771960826';
+} from './table-config.js?v=1771961872';
+import { DIFFICULTY } from './physics.js?v=1771961872';
 
 const DIFF_COLORS = {
   [DIFFICULTY.EASY]:      '#00e676',
