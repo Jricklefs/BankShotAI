@@ -11,10 +11,13 @@
 </head>
 <body>
   <div id="app">
-    <!-- Camera feed -->
+    <!-- Camera viewfinder (shown during capture mode) -->
     <video id="camera-feed" autoplay playsinline muted></video>
 
-    <!-- Canvas overlay -->
+    <!-- Frozen captured image (shown after capture) -->
+    <canvas id="captured-image"></canvas>
+
+    <!-- Canvas overlay for drawings -->
     <canvas id="overlay"></canvas>
 
     <!-- Status bar -->
@@ -25,6 +28,13 @@
 
     <!-- Bottom toolbar -->
     <div id="toolbar"></div>
+
+    <!-- Capture button (big circle, camera-style) -->
+    <div id="capture-btn-container" class="hidden">
+      <button id="capture-btn" aria-label="Take Photo">
+        <div class="capture-ring"></div>
+      </button>
+    </div>
 
     <!-- Loading screen -->
     <div id="loading-overlay">

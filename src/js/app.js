@@ -1,8 +1,8 @@
 /**
  * BankShotAI - Main App Controller
  *
- * State machine: SCANNING → READY → CUE_SELECTED → TARGET_SELECTED → SHOWING_SHOT
- * Auto table detection, no manual corner taps.
+ * Flow: VIEWFINDER → CAPTURED → CUE_SELECTED → TARGET_SELECTED → SHOWING_SHOT
+ * User takes a photo, then taps cue ball → target ball → pocket.
  */
 
 import { Camera } from './camera.js';
@@ -13,7 +13,8 @@ import { createSyntheticBalls, TABLE_WIDTH, TABLE_LENGTH, BALL_DIAMETER, POCKETS
 
 const STATE = {
   LOADING:         'loading',
-  SCANNING:        'scanning',
+  VIEWFINDER:      'viewfinder',
+  PROCESSING:      'processing',
   READY:           'ready',
   CUE_SELECTED:    'cue_selected',
   TARGET_SELECTED: 'target_selected',
@@ -23,10 +24,13 @@ const STATE = {
 class App {
   constructor() {
     this.video = document.getElementById('camera-feed');
+    this.capturedCanvas = document.getElementById('captured-image');
     this.overlay = document.getElementById('overlay');
     this.statusText = document.getElementById('status-text');
     this.toolbar = document.getElementById('toolbar');
     this.loadingOverlay = document.getElementById('loading-overlay');
+    this.captureContainer = document.getElementById('capture-btn-container');
+    this.captureBtn = document.getElementById('capture-btn');
 
     this.camera = new Camera(this.video);
     this.renderer = new Renderer(this.overlay);
@@ -34,15 +38,13 @@ class App {
     this.calculator = new BankShotCalculator();
 
     this.state = STATE.LOADING;
-    this.tableCorners = null;     // video pixel coords [BL, BR, TR, TL]
-    this.canvasCorners = null;    // corners mapped to canvas coords (for outline drawing)
+    this.tableCorners = null;
     this.balls = [];
     this.selectedCue = null;
     this.selectedTarget = null;
-    this.selectedPocket = null;   // pocket name
-    this.shots = [];              // shots for selected pocket
-    this.captureCanvas = document.createElement('canvas');
-    this._scanTimer = null;
+    this.selectedPocket = null;
+    this.shots = [];
+    this._captureImageData = null;
     this._demoMode = false;
 
     this._init();
@@ -74,8 +76,7 @@ class App {
     if (this._demoMode) {
       this._enterDemoMode();
     } else {
-      this._setState(STATE.SCANNING);
-      this._startScanning();
+      this._setState(STATE.VIEWFINDER);
     }
 
     this._renderLoop();
@@ -83,6 +84,14 @@ class App {
 
   _bindEvents() {
     window.addEventListener('resize', () => this._resize());
+
+    // Capture button
+    this.captureBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this._capturePhoto();
+    });
+
+    // Tap handling on overlay
     this.overlay.addEventListener('click', (e) => {
       const rect = this.overlay.getBoundingClientRect();
       this._handleTap(e.clientX - rect.left, e.clientY - rect.top);
@@ -100,7 +109,76 @@ class App {
     const h = window.innerHeight;
     this.overlay.width = w;
     this.overlay.height = h;
+    this.capturedCanvas.width = w;
+    this.capturedCanvas.height = h;
     this.renderer.resize(w, h);
+  }
+
+  // --- Photo capture ---
+
+  _capturePhoto() {
+    if (!this.camera.running) return;
+
+    this._setState(STATE.PROCESSING);
+
+    // Capture frame from video
+    const tempCanvas = document.createElement('canvas');
+    const vw = this.video.videoWidth || 1280;
+    const vh = this.video.videoHeight || 720;
+    tempCanvas.width = vw;
+    tempCanvas.height = vh;
+    const ctx = tempCanvas.getContext('2d');
+    ctx.drawImage(this.video, 0, 0, vw, vh);
+    this._captureImageData = ctx.getImageData(0, 0, vw, vh);
+
+    // Draw frozen image on captured canvas (scaled to screen)
+    const cctx = this.capturedCanvas.getContext('2d');
+    const cw = this.capturedCanvas.width;
+    const ch = this.capturedCanvas.height;
+    cctx.drawImage(tempCanvas, 0, 0, vw, vh, 0, 0, cw, ch);
+
+    // Show frozen image, hide video
+    this.video.classList.add('hidden');
+    this.capturedCanvas.classList.remove('hidden');
+    this.captureContainer.classList.add('hidden');
+
+    // Process the captured image
+    setTimeout(() => this._processCapture(), 50);
+  }
+
+  _processCapture() {
+    if (!this._captureImageData || !isOpenCVReady()) {
+      this._enterDemoMode();
+      return;
+    }
+
+    // Detect table
+    const tableResult = detectTable(this._captureImageData);
+    if (tableResult && tableResult.confidence > 0.2) {
+      this.tableCorners = tableResult.corners;
+    } else {
+      this.tableCorners = null;
+    }
+
+    // Detect balls
+    try {
+      this.balls = this.detector.detect(this._captureImageData, this.tableCorners);
+    } catch (e) {
+      console.error('Ball detection failed:', e);
+      this.balls = [];
+    }
+
+    if (this.balls.length === 0) {
+      this._setStatus('No balls detected — try again or use demo');
+      this._setState(STATE.READY);
+      return;
+    }
+
+    this.selectedCue = null;
+    this.selectedTarget = null;
+    this.selectedPocket = null;
+    this.shots = [];
+    this._setState(STATE.READY);
   }
 
   // --- Tap handling ---
@@ -114,10 +192,7 @@ class App {
         this._onBallTap(x, y, 'target');
         break;
       case STATE.TARGET_SELECTED:
-        this._onPocketTap(x, y);
-        break;
       case STATE.SHOWING_SHOT:
-        // Allow re-tapping a different pocket
         this._onPocketTap(x, y);
         break;
     }
@@ -145,7 +220,6 @@ class App {
   }
 
   _onPocketTap(x, y) {
-    // Find closest pocket to tap position
     let bestPocket = null, bestDist = Infinity;
     for (const [name, pos] of Object.entries(POCKETS)) {
       const [px, py] = this.renderer.toCanvas(pos[0], pos[1]);
@@ -153,8 +227,7 @@ class App {
       if (d < bestDist) { bestDist = d; bestPocket = name; }
     }
 
-    // Must be within reasonable tap distance
-    const maxTapDist = Math.max(40, BALL_DIAMETER * this.renderer.scaleX * 2);
+    const maxTapDist = Math.max(60, BALL_DIAMETER * this.renderer.scaleX * 3);
     if (!bestPocket || bestDist > maxTapDist) return;
 
     this.selectedPocket = bestPocket;
@@ -162,81 +235,11 @@ class App {
     this._setState(STATE.SHOWING_SHOT);
   }
 
-  // --- Table scanning ---
-
-  _startScanning() {
-    if (this._scanTimer) clearInterval(this._scanTimer);
-    this._scanTimer = setInterval(() => this._scanForTable(), 500);
-  }
-
-  _stopScanning() {
-    if (this._scanTimer) {
-      clearInterval(this._scanTimer);
-      this._scanTimer = null;
-    }
-  }
-
-  _scanForTable() {
-    if (!this.camera.running || !isOpenCVReady()) return;
-
-    const imageData = this.camera.captureFrame(this.captureCanvas);
-    if (!imageData) return;
-
-    const result = detectTable(imageData);
-    if (result && result.confidence > 0.3) {
-      this._stopScanning();
-      this.tableCorners = result.corners;
-
-      // Map corners from video pixel coords to canvas overlay coords
-      const vw = this.camera.videoWidth || this.overlay.width;
-      const vh = this.camera.videoHeight || this.overlay.height;
-      const cw = this.overlay.width;
-      const ch = this.overlay.height;
-      this.canvasCorners = this.tableCorners.map(([vx, vy]) => [
-        (vx / vw) * cw,
-        (vy / vh) * ch,
-      ]);
-
-      // Detect balls
-      this._detectBalls(imageData);
-    }
-  }
-
-  _detectBalls(imageData = null) {
-    if (!isOpenCVReady()) return;
-    if (!imageData) {
-      imageData = this.camera.captureFrame(this.captureCanvas);
-    }
-    if (!imageData && !this._demoMode) return;
-
-    if (this._demoMode || !imageData) {
-      this.balls = createSyntheticBalls();
-    } else {
-      try {
-        this.balls = this.detector.detect(imageData, this.tableCorners);
-      } catch (e) {
-        console.error('Ball detection failed:', e);
-        this.balls = createSyntheticBalls();
-      }
-    }
-
-    if (this.balls.length === 0) {
-      this.balls = createSyntheticBalls();
-    }
-
-    this.selectedCue = null;
-    this.selectedTarget = null;
-    this.selectedPocket = null;
-    this.shots = [];
-    this._setState(STATE.READY);
-  }
-
   _calculateShots() {
     if (this.selectedCue === null || this.selectedTarget === null || !this.selectedPocket) return;
 
     const cue = this.balls[this.selectedCue];
     const target = this.balls[this.selectedTarget];
-    const pocketPos = POCKETS[this.selectedPocket];
 
     this.shots = this.calculator.findAllShots(
       [cue.x, cue.y],
@@ -252,18 +255,33 @@ class App {
     this.state = state;
     const messages = {
       [STATE.LOADING]:         'Loading...',
-      [STATE.SCANNING]:        'Point camera at table...',
-      [STATE.READY]:           `${this.balls.length} balls found — Tap the cue ball`,
-      [STATE.CUE_SELECTED]:    'Tap the target ball',
+      [STATE.VIEWFINDER]:      'Point at table and tap 📸',
+      [STATE.PROCESSING]:      'Detecting table & balls...',
+      [STATE.READY]:           this.balls.length > 0
+                                 ? `${this.balls.length} balls found — Tap the cue ball`
+                                 : 'No balls detected — Retake or Demo',
+      [STATE.CUE_SELECTED]:    'Now tap the target ball',
       [STATE.TARGET_SELECTED]: 'Tap a pocket',
-      [STATE.SHOWING_SHOT]:    `${this.shots.length} shot${this.shots.length !== 1 ? 's' : ''} found — Tap another pocket or Reset`,
+      [STATE.SHOWING_SHOT]:    `${this.shots.length} shot${this.shots.length !== 1 ? 's' : ''} found`,
     };
     this._setStatus(messages[state] || '');
     this._updateToolbar();
+    this._updateVisibility();
   }
 
   _setStatus(msg) {
     this.statusText.textContent = msg;
+  }
+
+  _updateVisibility() {
+    // Show/hide capture button
+    if (this.state === STATE.VIEWFINDER) {
+      this.captureContainer.classList.remove('hidden');
+      this.video.classList.remove('hidden');
+      this.capturedCanvas.classList.add('hidden');
+    } else {
+      this.captureContainer.classList.add('hidden');
+    }
   }
 
   _updateToolbar() {
@@ -277,23 +295,24 @@ class App {
     };
 
     switch (this.state) {
-      case STATE.SCANNING:
+      case STATE.VIEWFINDER:
         btn('Demo Mode', () => this._enterDemoMode());
         break;
 
       case STATE.READY:
+        btn('Retake', () => this._retake(), 'primary');
+        btn('Demo Mode', () => this._enterDemoMode());
+        break;
+
       case STATE.CUE_SELECTED:
       case STATE.TARGET_SELECTED:
-        if (!this._demoMode) {
-          btn('Re-detect', () => this._redetect());
-        }
+        btn('Reset', () => this._resetSelection());
+        btn('Retake', () => this._retake());
         break;
 
       case STATE.SHOWING_SHOT:
         btn('Reset', () => this._resetSelection(), 'primary');
-        if (!this._demoMode) {
-          btn('Re-detect', () => this._redetect());
-        }
+        btn('Retake', () => this._retake());
         break;
     }
   }
@@ -306,21 +325,27 @@ class App {
     this._setState(STATE.READY);
   }
 
-  _redetect() {
+  _retake() {
     this.tableCorners = null;
-    this.canvasCorners = null;
     this.balls = [];
     this.selectedCue = null;
     this.selectedTarget = null;
     this.selectedPocket = null;
     this.shots = [];
-    this._setState(STATE.SCANNING);
-    this._startScanning();
+    this._captureImageData = null;
+
+    // Show video, hide captured
+    this.video.classList.remove('hidden');
+    this.capturedCanvas.classList.add('hidden');
+
+    this._setState(STATE.VIEWFINDER);
   }
 
   _enterDemoMode() {
     this._demoMode = true;
-    this._stopScanning();
+    this.video.classList.add('hidden');
+    this.capturedCanvas.classList.add('hidden');
+    this.captureContainer.classList.add('hidden');
     this.balls = createSyntheticBalls();
     this.selectedCue = null;
     this.selectedTarget = null;
@@ -336,11 +361,13 @@ class App {
     this.renderer.clear();
 
     switch (this.state) {
-      case STATE.SCANNING:
+      case STATE.VIEWFINDER:
+        // Just show camera feed, maybe a subtle guide
         this.renderer.drawScanningOverlay();
-        if (this.canvasCorners) {
-          this.renderer.drawTableOutline(this.canvasCorners);
-        }
+        break;
+
+      case STATE.PROCESSING:
+        this.renderer.drawTable();
         break;
 
       case STATE.READY:
